@@ -1,0 +1,83 @@
+/* 全局样式 */
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #f5f7fa;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* 滚动条美化 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #c0c4cc;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #909399;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Markdown 渲染样式 */
+.markdown-body {
+  line-height: 1.7;
+  word-wrap: break-word;
+
+  p { margin: 0.5em 0; }
+  ul, ol { padding-left: 1.5em; margin: 0.5em 0; }
+  li { margin: 0.25em 0; }
+  h1, h2, h3, h4 { margin: 0.8em 0 0.4em; font-weight: 600; }
+  h1 { font-size: 1.4em; }
+  h2 { font-size: 1.25em; }
+  h3 { font-size: 1.1em; }
+  code {
+    background: #f0f2f5;
+    padding: 0.15em 0.4em;
+    border-radius: 3px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.9em;
+  }
+  pre {
+    background: #2d2d2d;
+    color: #f8f8f2;
+    padding: 1em;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 0.5em 0;
+
+    code {
+      background: transparent;
+      padding: 0;
+      color: inherit;
+    }
+  }
+  blockquote {
+    border-left: 4px solid #dcdfe6;
+    padding-left: 1em;
+    margin: 0.5em 0;
+    color: #606266;
+  }
+  table {
+    border-collapse: collapse;
+    margin: 0.5em 0;
+
+    th, td {
+      border: 1px solid #dcdfe6;
+      padding: 0.4em 0.8em;
+    }
+    th { background: #f5f7fa; }
+  }
+  a {
+    color: #409eff;
+    text-decoration: none;
+    &:hover { text-decoration: underline; }
+  }
+}
