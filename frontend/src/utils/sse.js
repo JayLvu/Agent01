@@ -5,16 +5,17 @@
  *
  * 用法:
  *   streamChat(body, {
- *     onToken(token) { ... },
- *     onDone() { ... },
- *     onError(err) { ... }
+ *     onSession(sessionId) { ... },  // 首个事件,携带 sessionId
+ *     onToken(token) { ... },         // 逐 token 回调
+ *     onDone() { ... },               // 流结束
+ *     onError(err) { ... }            // 异常
  *   })
  *
  * @param {Object} body 请求体
  * @param {Object} handlers 回调
  * @returns {AbortController} 可调用 .abort() 中断
  */
-export function streamChat(body, { onToken, onDone, onError } = {}) {
+export function streamChat(body, { onSession, onToken, onDone, onError } = {}) {
   const controller = new AbortController()
 
   fetch('/api/v1/chat/stream', {
@@ -56,7 +57,9 @@ export function streamChat(body, { onToken, onDone, onError } = {}) {
               data += line.slice(5).trim()
             }
           }
-          if (eventType === 'token' && data) {
+          if (eventType === 'session' && data) {
+            onSession && onSession(data)
+          } else if (eventType === 'token' && data) {
             onToken && onToken(data)
           } else if (eventType === 'done') {
             onDone && onDone()

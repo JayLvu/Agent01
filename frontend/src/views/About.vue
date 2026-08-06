@@ -1,6 +1,5 @@
 <template>
-  <layout>
-    <div class="about-page">
+  <div class="about-page">
       <el-card shadow="never" class="about-card">
         <h1><i class="el-icon-cpu"></i> AI 对话 Agent</h1>
         <p class="subtitle">基于 Spring Boot 3 + DeepSeek + Vue 2 的智能对话系统</p>
@@ -37,15 +36,12 @@
         <p class="footer">© 2026 VanzyLiu · <a href="https://github.com/VanzyLiu/Agent01" target="_blank">GitHub</a></p>
       </el-card>
     </div>
-  </layout>
+  </div>
 </template>
 
 <script>
-import Layout from '@/components/Layout.vue'
-
 export default {
-  name: 'About',
-  components: { Layout }
+  name: 'About'
 }
 </script>
 

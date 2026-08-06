@@ -1,6 +1,5 @@
 <template>
-  <layout>
-    <div class="documents-page">
+  <div class="documents-page">
       <div class="content-wrapper">
         <!-- 上传区 -->
         <el-card class="upload-card" shadow="never">
@@ -97,16 +96,14 @@
         </el-card>
       </div>
     </div>
-  </layout>
+  </div>
 </template>
 
 <script>
-import Layout from '@/components/Layout.vue'
 import documentApi from '@/api/document'
 
 export default {
   name: 'Documents',
-  components: { Layout },
   data() {
     return {
       documents: [],

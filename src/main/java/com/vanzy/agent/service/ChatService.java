@@ -33,4 +33,13 @@ public interface ChatService {
      * @param sessionId 会话 ID
      */
     void clearSession(String sessionId);
+
+    /**
+     * 解析会话 ID: 入参为空则新建,非空则原样返回
+     * 用于流式对话前预先获取 sessionId(便于通过 SSE 事件回传给前端)
+     *
+     * @param sessionId 请求中的 sessionId(可为空)
+     * @return 实际使用的 sessionId
+     */
+    String resolveSessionId(String sessionId);
 }

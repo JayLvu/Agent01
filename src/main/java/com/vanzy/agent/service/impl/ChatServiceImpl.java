@@ -123,6 +123,11 @@ public class ChatServiceImpl implements ChatService {
         memoryService.clearHistory(sessionId);
     }
 
+    @Override
+    public String resolveSessionId(String sessionId) {
+        return ensureSessionId(sessionId);
+    }
+
     private String ensureSessionId(String sessionId) {
         return StringUtils.hasText(sessionId) ? sessionId : memoryService.createSession();
     }

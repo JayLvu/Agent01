@@ -17,7 +17,7 @@
         <el-menu-item
           v-for="route in menuRoutes"
           :key="route.path"
-          :index="route.path"
+          :index="'/' + route.path"
         >
           <i :class="route.meta.icon"></i>
           <span slot="title">{{ route.meta.title }}</span>
@@ -63,7 +63,9 @@ export default {
   computed: {
     ...mapGetters(['sessionId']),
     menuRoutes() {
-      return this.$router.options.routes.filter(r => r.meta && r.meta.title)
+      // 从根路由的 children 中获取菜单项
+      const root = this.$router.options.routes.find(r => r.path === '/')
+      return root ? root.children.filter(r => r.meta && r.meta.title) : []
     },
     activeRoute() {
       return this.$route.path

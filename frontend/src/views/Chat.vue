@@ -1,6 +1,5 @@
 <template>
-  <layout>
-    <div class="chat-page">
+  <div class="chat-page">
       <!-- 消息列表区 -->
       <div ref="messageList" class="message-list">
         <div v-if="messages.length === 0" class="empty-state">
@@ -90,18 +89,17 @@
         </div>
       </div>
     </div>
-  </layout>
+  </div>
 </template>
 
 <script>
-import Layout from '@/components/Layout.vue'
 import MessageItem from '@/components/MessageItem.vue'
 import chatApi from '@/api/chat'
 import { streamChat } from '@/utils/sse'
 
 export default {
   name: 'Chat',
-  components: { Layout, MessageItem },
+  components: { MessageItem },
   data() {
     return {
       inputText: '',
@@ -202,13 +200,17 @@ export default {
             stream: true
           },
           {
+            onSession: (sessionId) => {
+              // 首个事件: 后端回传的 sessionId(首次对话时为新生成)
+              if (sessionId && sessionId !== this.sessionId) {
+                this.$store.commit('SET_SESSION', sessionId)
+              }
+            },
             onToken: (token) => {
               this.$store.commit('APPEND_TO_LAST', { role: 'assistant', chunk: token })
             },
             onDone: () => {
               this.$store.commit('FINISH_STREAMING', 'assistant')
-              // 若首条流式消息,后端会通过持久化生成 sessionId
-              // 这里从首条响应里读取(若后端在 SSE 中带上 sessionId,可在此处理)
               resolve()
             },
             onError: (err) => reject(err)

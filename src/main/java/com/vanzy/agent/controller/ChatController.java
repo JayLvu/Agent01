@@ -64,13 +64,26 @@ public class ChatController {
     @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> chatStream(@Valid @RequestBody ChatRequest request) {
         request.setStream(true);
-        log.info("收到流式对话请求: sessionId={}", request.getSessionId());
 
-        return chatService.chatStream(request)
-                .map(token -> ServerSentEvent.<String>builder()
-                        .data(token)
-                        .event("token")
-                        .build())
+        // 预解析 sessionId: 若是首次对话则生成新 ID,通过 session 事件回传给前端
+        String sessionId = chatService.resolveSessionId(request.getSessionId());
+        request.setSessionId(sessionId);
+        log.info("收到流式对话请求: sessionId={}", sessionId);
+
+        // 首个事件: 携带 sessionId,便于前端持久化
+        ServerSentEvent<String> sessionEvent = ServerSentEvent.<String>builder()
+                .event("session")
+                .data(sessionId)
+                .build();
+
+        return Flux.concat(
+                Flux.just(sessionEvent),
+                chatService.chatStream(request)
+                        .map(token -> ServerSentEvent.<String>builder()
+                                .data(token)
+                                .event("token")
+                                .build())
+        )
                 .concatWith(Flux.just(ServerSentEvent.<String>builder()
                         .event("done")
                         .data("[DONE]")
