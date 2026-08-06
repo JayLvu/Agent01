@@ -1,0 +1,10 @@
+# 开发环境配置
+logging:
+  level:
+    com.vanzy.agent: DEBUG
+    org.springframework.web.reactive: DEBUG
+
+# 开发环境关闭 RAG 以便快速启动
+agent:
+  rag:
+    enabled: true
