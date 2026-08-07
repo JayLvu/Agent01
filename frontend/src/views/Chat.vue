@@ -55,6 +55,16 @@
             />
           </el-tooltip>
           <span class="mode-label">RAG</span>
+
+          <el-tooltip :content="enableTools ? '已启用工具调用(LLM 自主决策)' : '未启用工具调用'" placement="top">
+            <el-switch
+              v-model="enableTools"
+              active-color="#e6a23c"
+              inactive-color="#dcdfe6"
+              :disabled="loading"
+            />
+          </el-tooltip>
+          <span class="mode-label">工具</span>
         </div>
 
         <div class="input-box">
@@ -106,11 +116,12 @@ export default {
       loading: false,
       streamMode: true,
       enableRag: true,
+      enableTools: true,
       suggestions: [
-        '你好,请介绍一下自己',
-        '用 200 字解释什么是 RAG',
-        '帮我写一个冒泡排序',
-        'Spring Boot 3 有哪些新特性?'
+        '现在几点了？',
+        '帮我计算 (12+8)*5 等于多少',
+        '查看当前目录下有哪些文件',
+        '用 200 字解释什么是 RAG'
       ],
       abortController: null
     }
@@ -177,6 +188,7 @@ export default {
         sessionId: this.sessionId || undefined,
         message: text,
         enableRag: this.enableRag,
+        enableTools: this.enableTools,
         stream: false
       })
       if (resp.sessionId && resp.sessionId !== this.sessionId) {
@@ -197,6 +209,7 @@ export default {
             sessionId: this.sessionId || undefined,
             message: text,
             enableRag: this.enableRag,
+            enableTools: this.enableTools,
             stream: true
           },
           {
@@ -208,6 +221,21 @@ export default {
             },
             onToken: (token) => {
               this.$store.commit('APPEND_TO_LAST', { role: 'assistant', chunk: token })
+            },
+            onToolCall: (info) => {
+              this.$store.commit('ADD_TOOL_CALL', {
+                toolName: info.toolName,
+                arguments: info.arguments,
+                callId: info.callId
+              })
+            },
+            onToolResult: (info) => {
+              this.$store.commit('SET_TOOL_RESULT', {
+                callId: info.callId,
+                result: info.result,
+                success: info.success,
+                durationMs: info.durationMs
+              })
             },
             onDone: () => {
               this.$store.commit('FINISH_STREAMING', 'assistant')

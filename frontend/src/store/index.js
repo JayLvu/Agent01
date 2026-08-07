@@ -45,6 +45,33 @@ export default new Vuex.Store({
         }
       }
     },
+    /** 在最后一个 streaming assistant 消息上追加工具调用记录 */
+    ADD_TOOL_CALL(state, { toolName, arguments: args, callId }) {
+      for (let i = state.messages.length - 1; i >= 0; i--) {
+        const m = state.messages[i]
+        if (m.role === 'assistant' && m.streaming) {
+          if (!m.toolCalls) Vue.set(m, 'toolCalls', [])
+          m.toolCalls.push({ toolName, arguments: args, callId, pending: true })
+          break
+        }
+      }
+    },
+    /** 更新工具调用结果 */
+    SET_TOOL_RESULT(state, { callId, result, success, durationMs }) {
+      for (let i = state.messages.length - 1; i >= 0; i--) {
+        const m = state.messages[i]
+        if (m.role === 'assistant' && m.toolCalls) {
+          const tc = m.toolCalls.find(t => t.callId === callId)
+          if (tc) {
+            tc.result = result
+            tc.success = success
+            tc.durationMs = durationMs
+            tc.pending = false
+            break
+          }
+        }
+      }
+    },
     CLEAR_MESSAGES(state) {
       state.messages = []
     }

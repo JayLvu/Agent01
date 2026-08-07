@@ -6,6 +6,19 @@
     <div class="content">
       <div class="role">{{ roleLabel }}</div>
       <div class="bubble">
+        <!-- 工具调用过程 -->
+        <div v-if="message.toolCalls && message.toolCalls.length" class="tool-calls">
+          <div v-for="(tc, i) in message.toolCalls" :key="i" class="tool-call-item">
+            <div class="tool-call-header">
+              <i :class="toolIcon(tc.toolName)"></i>
+              <span class="tool-name">{{ tc.toolName }}</span>
+              <el-tag size="mini" :type="toolStatusType(tc)">{{ toolStatusText(tc) }}</el-tag>
+              <span v-if="tc.durationMs" class="tool-duration">{{ tc.durationMs }}ms</span>
+            </div>
+            <div class="tool-args"><code>{{ tc.arguments }}</code></div>
+            <div v-if="tc.result" class="tool-result" :class="{ 'is-error': !tc.success }">{{ tc.result }}</div>
+          </div>
+        </div>
         <div v-if="shouldRenderMarkdown" class="markdown-body" v-html="renderedContent"></div>
         <div v-else class="text-content">{{ message.content }}</div>
         <span v-if="message.streaming" class="cursor">|</span>
@@ -43,6 +56,27 @@ export default {
       } catch {
         return this.message.content
       }
+    }
+  },
+  methods: {
+    toolIcon(name) {
+      const map = {
+        execute_shell: 'el-icon-monitor',
+        query_datetime: 'el-icon-time',
+        calculate: 'el-icon-cpu',
+        list_files: 'el-icon-folder-opened',
+        read_file: 'el-icon-document',
+        write_file: 'el-icon-edit-outline'
+      }
+      return map[name] || 'el-icon-s-tools'
+    },
+    toolStatusType(tc) {
+      if (tc.pending) return 'warning'
+      return tc.success ? 'success' : 'danger'
+    },
+    toolStatusText(tc) {
+      if (tc.pending) return '执行中'
+      return tc.success ? '成功' : '失败'
     }
   }
 }
@@ -125,6 +159,71 @@ export default {
   @keyframes blink {
     0%, 50% { opacity: 1; }
     51%, 100% { opacity: 0; }
+  }
+}
+
+.tool-calls {
+  margin-bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tool-call-item {
+  background: #f5f7fa;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+
+  .tool-call-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+
+    i {
+      color: #e6a23c;
+    }
+
+    .tool-name {
+      font-weight: 600;
+      color: #303133;
+    }
+
+    .tool-duration {
+      margin-left: auto;
+      color: #909399;
+      font-size: 11px;
+    }
+  }
+
+  .tool-args {
+    color: #606266;
+    code {
+      background: #ecf5ff;
+      color: #409eff;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-family: 'Consolas', monospace;
+    }
+  }
+
+  .tool-result {
+    margin-top: 4px;
+    color: #67c23a;
+    background: #f0f9eb;
+    padding: 4px 6px;
+    border-radius: 3px;
+    word-break: break-all;
+    white-space: pre-wrap;
+    max-height: 120px;
+    overflow-y: auto;
+
+    &.is-error {
+      color: #f56c6c;
+      background: #fef0f0;
+    }
   }
 }
 </style>

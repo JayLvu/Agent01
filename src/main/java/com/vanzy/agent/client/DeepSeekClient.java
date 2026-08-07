@@ -6,14 +6,18 @@ import com.vanzy.agent.model.ChatMessage;
 import com.vanzy.agent.model.DeepSeekDtos.DeepSeekRequest;
 import com.vanzy.agent.model.DeepSeekDtos.DeepSeekResponse;
 import com.vanzy.agent.model.DeepSeekDtos.DeepSeekStreamChunk;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.MediaType;
+import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * DeepSeek API 客户端
@@ -34,10 +38,12 @@ public class DeepSeekClient {
 
     private final WebClient webClient;
     private final DeepSeekProperties properties;
+    private final ObjectMapper objectMapper;
 
-    public DeepSeekClient(WebClient deepSeekWebClient, DeepSeekProperties properties) {
+    public DeepSeekClient(WebClient deepSeekWebClient, DeepSeekProperties properties, ObjectMapper objectMapper) {
         this.webClient = deepSeekWebClient;
         this.properties = properties;
+        this.objectMapper = objectMapper;
     }
 
     /**
@@ -47,8 +53,23 @@ public class DeepSeekClient {
      * @return DeepSeek 完整响应
      */
     public Mono<DeepSeekResponse> chat(List<ChatMessage> messages) {
+        return chat(messages, null);
+    }
+
+    /**
+     * 同步对话(支持工具调用): 一次性返回完整回复
+     *
+     * @param messages 对话消息列表
+     * @param tools    工具 schema 列表(为 null 则不带 tools)
+     * @return DeepSeek 完整响应
+     */
+    public Mono<DeepSeekResponse> chat(List<ChatMessage> messages, List<Map<String, Object>> tools) {
         DeepSeekRequest request = buildRequest(messages, false);
-        log.debug("调用 DeepSeek 同步对话, 消息数: {}", messages.size());
+        if (tools != null && !tools.isEmpty()) {
+            request.setTools(tools);
+            request.setToolChoice("auto");
+        }
+        log.debug("调用 DeepSeek 同步对话, 消息数: {}, 是否带工具: {}", messages.size(), tools != null);
 
         return webClient.post()
                 .uri(CHAT_PATH)
@@ -74,7 +95,16 @@ public class DeepSeekClient {
                 .accept(MediaType.TEXT_EVENT_STREAM)
                 .bodyValue(request)
                 .retrieve()
-                .bodyToFlux(DeepSeekStreamChunk.class)
+                .bodyToFlux(new ParameterizedTypeReference<ServerSentEvent<String>>() {})
+                .map(ServerSentEvent::data)
+                .filter(data -> data != null && !"[DONE]".equals(data.trim()))
+                .<DeepSeekStreamChunk>handle((data, sink) -> {
+                    try {
+                        sink.next(objectMapper.readValue(data, DeepSeekStreamChunk.class));
+                    } catch (Exception e) {
+                        log.warn("解析 SSE 数据块失败,跳过: data={}", data);
+                    }
+                })
                 .doOnError(e -> log.error("DeepSeek 流式调用失败", e))
                 .onErrorMap(e -> new LlmException("DeepSeek 流式调用失败: " + e.getMessage(), e));
     }

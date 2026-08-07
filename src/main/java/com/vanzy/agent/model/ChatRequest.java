@@ -25,6 +25,9 @@ public class ChatRequest {
     /** 是否启用 RAG 文档检索(默认 true) */
     private Boolean enableRag = true;
 
+    /** 是否启用工具调用模式(LLM 自主决策调用工具,默认 false) */
+    private Boolean enableTools = false;
+
     /** 是否流式响应(由 API 端点决定,此字段仅作记录) */
     private Boolean stream = false;
 

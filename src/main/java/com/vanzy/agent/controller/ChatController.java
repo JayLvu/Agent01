@@ -1,7 +1,9 @@
 package com.vanzy.agent.controller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vanzy.agent.model.ChatRequest;
 import com.vanzy.agent.model.ChatResponse;
+import com.vanzy.agent.model.StreamEvent;
 import com.vanzy.agent.service.ChatService;
 import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
@@ -20,7 +22,7 @@ import reactor.core.publisher.Flux;
  *
  * 端点:
  * - POST /chat         同步对话
- * - POST /chat/stream  流式对话(SSE)
+ * - POST /chat/stream  流式对话(SSE,支持工具调用事件)
  * - DELETE /chat/{sessionId}  清空会话历史
  *
  * @author VanzyLiu
@@ -31,9 +33,11 @@ import reactor.core.publisher.Flux;
 public class ChatController {
 
     private final ChatService chatService;
+    private final ObjectMapper objectMapper;
 
-    public ChatController(ChatService chatService) {
+    public ChatController(ChatService chatService, ObjectMapper objectMapper) {
         this.chatService = chatService;
+        this.objectMapper = objectMapper;
     }
 
     /**
@@ -79,10 +83,7 @@ public class ChatController {
         return Flux.concat(
                 Flux.just(sessionEvent),
                 chatService.chatStream(request)
-                        .map(token -> ServerSentEvent.<String>builder()
-                                .data(token)
-                                .event("token")
-                                .build())
+                        .map(this::toSseEvent)
         )
                 .concatWith(Flux.just(ServerSentEvent.<String>builder()
                         .event("done")
@@ -104,5 +105,29 @@ public class ChatController {
     public String clearSession(@PathVariable String sessionId) {
         chatService.clearSession(sessionId);
         return "会话已清空: " + sessionId;
+    }
+
+    /**
+     * 将 StreamEvent 转换为 SSE 事件
+     */
+    private ServerSentEvent<String> toSseEvent(StreamEvent event) {
+        return switch (event) {
+            case StreamEvent.Token t -> ServerSentEvent.<String>builder()
+                    .event("token").data(t.content()).build();
+            case StreamEvent.ToolCall tc -> ServerSentEvent.<String>builder()
+                    .event("tool_call").data(toJson(tc)).build();
+            case StreamEvent.ToolResult tr -> ServerSentEvent.<String>builder()
+                    .event("tool_result").data(toJson(tr)).build();
+            case StreamEvent.Error err -> ServerSentEvent.<String>builder()
+                    .event("error").data(err.message()).build();
+        };
+    }
+
+    private String toJson(Object obj) {
+        try {
+            return objectMapper.writeValueAsString(obj);
+        } catch (Exception e) {
+            return "{}";
+        }
     }
 }

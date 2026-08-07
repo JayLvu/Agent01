@@ -13,6 +13,10 @@ public class AgentException extends RuntimeException {
         this(500, message);
     }
 
+    public AgentException(String message, Throwable cause) {
+        this(500, message, cause);
+    }
+
     public AgentException(int code, String message) {
         super(message);
         this.code = code;

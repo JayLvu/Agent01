@@ -5,17 +5,19 @@
  *
  * 用法:
  *   streamChat(body, {
- *     onSession(sessionId) { ... },  // 首个事件,携带 sessionId
- *     onToken(token) { ... },         // 逐 token 回调
- *     onDone() { ... },               // 流结束
- *     onError(err) { ... }            // 异常
+ *     onSession(sessionId) { ... },        // 首个事件,携带 sessionId
+ *     onToken(token) { ... },              // 逐 token 回调
+ *     onToolCall(info) { ... },            // LLM 决定调用工具 {toolName,arguments,callId}
+ *     onToolResult(info) { ... },          // 工具执行结果 {toolName,result,success,durationMs}
+ *     onDone() { ... },                    // 流结束
+ *     onError(err) { ... }                 // 异常
  *   })
  *
  * @param {Object} body 请求体
  * @param {Object} handlers 回调
  * @returns {AbortController} 可调用 .abort() 中断
  */
-export function streamChat(body, { onSession, onToken, onDone, onError } = {}) {
+export function streamChat(body, { onSession, onToken, onToolCall, onToolResult, onDone, onError } = {}) {
   const controller = new AbortController()
 
   fetch('/api/v1/chat/stream', {
@@ -61,6 +63,10 @@ export function streamChat(body, { onSession, onToken, onDone, onError } = {}) {
             onSession && onSession(data)
           } else if (eventType === 'token' && data) {
             onToken && onToken(data)
+          } else if (eventType === 'tool_call' && data) {
+            onToolCall && onToolCall(safeParse(data))
+          } else if (eventType === 'tool_result' && data) {
+            onToolResult && onToolResult(safeParse(data))
           } else if (eventType === 'done') {
             onDone && onDone()
             return
@@ -81,4 +87,12 @@ export function streamChat(body, { onSession, onToken, onDone, onError } = {}) {
     })
 
   return controller
+}
+
+function safeParse(str) {
+  try {
+    return JSON.parse(str)
+  } catch {
+    return { raw: str }
+  }
 }

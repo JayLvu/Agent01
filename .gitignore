@@ -33,3 +33,9 @@ data/docs/
 
 # 向量库索引数据
 data/vector/
+
+# 文件工具沙箱目录(运行时生成)
+workspace/
+
+# 运行时输出目录
+9999-output/

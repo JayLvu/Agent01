@@ -2,10 +2,11 @@ package com.vanzy.agent.service;
 
 import com.vanzy.agent.model.ChatRequest;
 import com.vanzy.agent.model.ChatResponse;
+import com.vanzy.agent.model.StreamEvent;
 import reactor.core.publisher.Flux;
 
 /**
- * 核心对话服务: 协调记忆、RAG、LLM 三大组件
+ * 核心对话服务: 协调记忆、RAG、LLM、工具调用四大组件
  *
  * @author VanzyLiu
  */
@@ -20,12 +21,13 @@ public interface ChatService {
     ChatResponse chat(ChatRequest request);
 
     /**
-     * 流式对话: 通过 SSE 返回 token 流
+     * 流式对话: 通过 SSE 返回事件流
+     * 事件类型包括 Token(文本)、ToolCall(工具调用)、ToolResult(工具结果)、Error(错误)
      *
      * @param request 对话请求
-     * @return 逐 token 的 Flux
+     * @return 事件流 Flux
      */
-    Flux<String> chatStream(ChatRequest request);
+    Flux<StreamEvent> chatStream(ChatRequest request);
 
     /**
      * 清空指定会话的历史
@@ -36,7 +38,6 @@ public interface ChatService {
 
     /**
      * 解析会话 ID: 入参为空则新建,非空则原样返回
-     * 用于流式对话前预先获取 sessionId(便于通过 SSE 事件回传给前端)
      *
      * @param sessionId 请求中的 sessionId(可为空)
      * @return 实际使用的 sessionId
