@@ -49,16 +49,23 @@ export function streamChat(body, { onSession, onToken, onToolCall, onToolResult,
         buffer = events.pop() // 最后一段可能不完整,保留
 
         for (const event of events) {
-          const lines = event.split('\n')
+          // 按 \n 拆行,但 data 行的换行需要保留
+          // SSE 规范: 每行以 "field:" 开头, data 字段值可能跨多行(每行一个 data:)
           let eventType = 'message'
-          let data = ''
-          for (const line of lines) {
+          const dataParts = []
+          for (const line of event.split('\n')) {
             if (line.startsWith('event:')) {
               eventType = line.slice(6).trim()
             } else if (line.startsWith('data:')) {
-              data += line.slice(5).trim()
+              // data: 后面的内容保留原始值,只去掉 "data:" 前缀和紧跟的一个空格(SSE 规范)
+              // 不 trim,否则 token 中的前导/尾随空格和换行会丢失
+              let val = line.slice(5)
+              if (val.startsWith(' ')) val = val.slice(1) // SSE 规范: data: 后可有一个空格
+              dataParts.push(val)
             }
           }
+          // 多个 data: 行按 SSE 规范用 \n 拼接; 单行 data 直接取值
+          const data = dataParts.join('\n')
           if (eventType === 'session' && data) {
             onSession && onSession(data)
           } else if (eventType === 'token' && data) {
