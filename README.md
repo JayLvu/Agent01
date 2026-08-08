@@ -1,6 +1,6 @@
 # Agent01 · AI 对话 Agent
 
-> 基于 Spring Boot 3 + DeepSeek 大模型 + Vue 3 的私有化 AI 对话 Agent，内置 **LLM 工具调用（Function Calling）框架**、**流式响应（SSE）**、**对话记忆（Redis）**、\*\*RAG 文档检索（向量搜索）\*\*四大核心能力。
+> 基于 Spring Boot 3 + DeepSeek 大模型 + Vue 3 的私有化 AI 对话 Agent，内置 **LLM 工具调用（Function Calling）框架**、**流式响应（SSE）**、**对话记忆（Redis）**、**RAG 文档检索（向量搜索）**、**Skill 知识注入**、**对话附件**六大核心能力。
 
 ***
 
@@ -12,6 +12,7 @@
 - **SSE 流式响应**：边生成边输出，打字机效果（前端通过 `EventSource` 实时消费）
 - **同步响应接口**：同时提供同步接口，方便非流式场景调用
 - **多轮对话记忆**：基于 Redis 保存会话上下文，默认保留最近 20 轮，TTL 24 小时
+- **对话附件**：在输入框上传文本文件（md/txt/csv/json/py/java 等），前端本地读取内容后随消息一起发送，后端自动把附件内容以结构化格式拼到用户消息前，让 LLM 直接分析文件内容
 
 ### 🛠️ LLM 工具调用框架（Function Calling）
 
@@ -41,15 +42,33 @@ LLM 可以自主决策、编排、链式调用以下工具，循环执行直到�
 - **相似检索**：Top-K=4 检索最相关片段，拼入 LLM 系统提示词
 - **文档管理页**：前端可视化上传、列表、删除文档
 
+### 🧠 Skill 知识注入
+
+- **Skill 上传**：支持 `.md` / `.markdown` / `.txt` 格式的 Skill 文件，通过前端管理页或 API 上传
+- **自动注入**：每次对话时，后端自动读取所有已启用的 Skill 内容，以 `# 用户自定义 Skill` 标题拼接到 System Prompt 中，让 LLM 遵循自定义的知识与规则
+- **启用/禁用**：每个 Skill 可独立开关，禁用后不注入，不影响已上传的文件
+- **Skill 管理页**：前端可视化上传、列表、查看内容、启用/禁用、删除
+- **元数据存储**：Skill 元数据存 Redis，文件内容存磁盘（`./data/skills/`）
+
+### 📎 对话附件
+
+- **文件上传**：在对话框工具栏点击 📎 按钮选择文件，支持多选
+- **支持格式**：md/markdown/txt/csv/json/xml/yaml/yml/py/java/js/html/vue/log 等文本格式
+- **本地读取**：前端用 `FileReader.readAsText` 在浏览器本地读取文件内容，不上传二进制文件到服务器
+- **内容注入**：后端把附件内容以 `附件[N]: 文件名 + 内容块 + 用户问题` 格式拼到用户消息前，超 200KB 自动截断
+- **消息气泡展示**：用户消息气泡中显示 `[附加 N 个文件: a.md, b.csv]`，便于确认上下文
+
 ### 🎨 前端界面（Vue 3 + Element Plus）
 
-- 三个模块：**对话页 / 文档管理 / 关于**
+- 四个模块：**对话页 / 文档管理 / Skill 管理 / 关于**
 - 全部组件采用 `<script setup>` Composition API 风格
 - 对话页：
   - 气泡式消息流，支持 Markdown 渲染（marked）
   - 工具调用卡片：图标 → 输入参数 → 执行中 loading → 成功/失败结果（可折叠展开）
   - 流式 Token 实时追加，支持取消生成
   - 多 Session 会话切换，新会话按钮
+  - **附件上传**：工具栏 📎 按钮，支持多选文本文件，附件展示栏可逐个移除
+- Skill 管理页：上传 Skill 文件、列表表格、启用/禁用开关、查看内容弹窗、删除确认
 - 开发环境：通过 Vite `server.proxy` 把 `/api` 代理到后端 `8080`，解决跨域
 - 生产构建：Vite 构建输出到 `frontend/dist/`，可由 Nginx 托管或放到 Spring Boot static 目录
 
@@ -102,21 +121,25 @@ Agent01/
 │   │   │   │   ├── client/
 │   │   │   │   │   └── DeepSeekClient.java            # DeepSeek HTTP 封装(同步/流式 + tools schema)
 │   │   │   │   ├── config/
-│   │   │   │   │   ├── AgentProperties.java           # agent.* 配置绑定(记忆/RAG/工具/文件沙箱)
+│   │   │   │   │   ├── AgentProperties.java           # agent.* 配置绑定(记忆/RAG/工具/文件沙箱/Skill)
 │   │   │   │   │   ├── DeepSeekProperties.java        # deepseek.* 配置绑定
 │   │   │   │   │   ├── RedisConfig.java               # Redis 序列化配置
-│   │   │   │   │   └── WebClientConfig.java           # WebClient 超时+连接池
+│   │   │   │   │   ├── WebClientConfig.java           # WebClient 超时+连接池
+│   │   │   │   │   └── WebMvcConfig.java              # 全局 CORS + UTF-8 响应编码
 │   │   │   │   ├── controller/
 │   │   │   │   │   ├── ChatController.java            # /chat  同步 /chat/stream SSE /clear
 │   │   │   │   │   ├── DocumentController.java        # /documents 上传/列表/删除
+│   │   │   │   │   ├── SkillController.java           # /skills 上传/列表/切换/删除/读取内容
 │   │   │   │   │   └── HealthController.java          # /health 健康检查
 │   │   │   │   ├── exception/                         # 自定义异常 + 全局处理
 │   │   │   │   ├── model/
 │   │   │   │   │   ├── ChatMessage.java               # 统一消息结构(含 tool_calls)
-│   │   │   │   │   ├── ChatRequest.java               # 入参(sessionId/message/enableTools/enableRag/stream)
+│   │   │   │   │   ├── ChatRequest.java               # 入参(sessionId/message/enableTools/enableRag/stream/attachments)
 │   │   │   │   │   ├── ChatResponse.java              # 同步响应
 │   │   │   │   │   ├── DeepSeekDtos.java              # DeepSeek 请求/响应 DTO
 │   │   │   │   │   ├── Document.java / DocumentChunk.java
+│   │   │   │   │   ├── AttachmentFile.java            # 对话附件 DTO(fileName/fileType/fileSize/content)
+│   │   │   │   │   ├── Skill.java                     # Skill 元数据实体(id/name/fileName/enabled/uploadedAt)
 │   │   │   │   │   └── StreamEvent.java               # 流式事件(Token/ToolCall/ToolResult/Error)
 │   │   │   │   ├── rag/
 │   │   │   │   │   ├── DocumentService.java / impl    # 文档上传解析分块
@@ -124,15 +147,18 @@ Agent01/
 │   │   │   │   │   ├── VectorStore.java / impl Redis  # 向量增删查
 │   │   │   │   │   └── TextVectorizer.java            # 文本向量化(n-gram)
 │   │   │   │   ├── service/
-│   │   │   │   │   ├── ChatService.java / impl        # 核心对话(同步+流式+工具循环+RAG注入)
+│   │   │   │   │   ├── ChatService.java / impl        # 核心对话(同步+流式+工具循环+RAG注入+Skill注入+附件处理)
 │   │   │   │   │   └── MemoryService.java / Redis     # 会话记忆存取
+│   │   │   │   ├── skill/
+│   │   │   │   │   ├── SkillService.java              # Skill 服务接口
+│   │   │   │   │   └── impl/SkillServiceImpl.java     # 上传/列表/启用禁用/删除/读取/构建Prompt
 │   │   │   │   └── tool/
 │   │   │   │       ├── Tool.java                      # 工具统一接口
 │   │   │   │       ├── ToolRegistry.java              # 自动注册 + JSON Schema 生成
-│   │   │   │       ├── ToolResult.java                # 工具执行结果(success/content/duration/error)
+│   │   │   │       ├── ToolResult.java                # 工具执行结果(success/content/duration/error/callId)
 │   │   │   │       └── impl/                          # 6 个内置工具实现
 │   │   │   └── resources/
-│   │   │       ├── application.yml                    # 主配置
+│   │   │       ├── application.yml                    # 主配置(含 UTF-8 编码 + Skill 配置)
 │   │   │       └── application-dev.yml                # 开发环境覆盖
 │   │   └── test/                                      # 单元测试(向量化 smoke test)
 │   └── pom.xml
@@ -143,17 +169,19 @@ Agent01/
 │   │   ├── api/
 │   │   │   ├── request.js                             # Axios 实例(带拦截器)
 │   │   │   ├── chat.js                                # 对话接口封装
-│   │   │   └── document.js                            # 文档接口封装
+│   │   │   ├── document.js                            # 文档接口封装
+│   │   │   └── skill.js                               # Skill 接口封装
 │   │   ├── assets/styles/global.scss
 │   │   ├── components/
 │   │   │   ├── Layout.vue                             # 左侧菜单 + 头部 + 主区域 (<script setup>)
 │   │   │   └── MessageItem.vue                        # 单条消息 + 工具调用卡片渲染
-│   │   ├── router/index.js                            # createRouter /chat /documents /about
+│   │   ├── router/index.js                            # createRouter /chat /documents /skills /about
 │   │   ├── store/index.js                             # Pinia 全局状态(消息/会话)
 │   │   ├── utils/sse.js                               # SSE EventSource 封装(Token/工具事件解析)
 │   │   ├── views/
-│   │   │   ├── Chat.vue                               # 对话主页: 输入框 + 消息列表 + 流式渲染
+│   │   │   ├── Chat.vue                               # 对话主页: 输入框 + 附件上传 + 消息列表 + 流式渲染
 │   │   │   ├── Documents.vue                          # 文档上传/列表/删除
+│   │   │   ├── Skills.vue                             # Skill 上传/列表/启用禁用/查看/删除
 │   │   │   └── About.vue
 │   │   ├── App.vue
 │   │   └── main.js                                    # createApp + Element Plus 全局注册
@@ -164,8 +192,10 @@ Agent01/
 ├── workspace/                 # 文件工具沙箱(运行时生成,不提交 Git)
 ├── data/docs/                 # 文档上传存储目录
 ├── data/vector/               # 向量索引持久化
+├── data/skills/               # Skill 文件存储目录(运行时生成,不提交 Git)
+├── logs/                      # 后端日志目录(agent.log,运行时生成)
 ├── .env.example               # 环境变量模板
-├── .gitignore                 # 已排除 target/ node_modules/ workspace/ 等
+├── .gitignore                 # 已排除 target/ node_modules/ workspace/ data/skills/ logs/ 等
 └── README.md                  # 本文件
 ```
 
@@ -273,7 +303,15 @@ Content-Type: application/json
   "message":    "列出 workspace 里的文件,并读取 README.md",
   "enableTools": true,
   "enableRag":   false,
-  "stream":      false
+  "stream":      false,
+  "attachments": [                                    // 可选: 附件文件列表
+    {
+      "fileName": "report.md",
+      "fileType": "md",
+      "fileSize": 12345,
+      "content":  "这里是文件的文本内容..."
+    }
+  ]
 }
 ```
 
@@ -307,6 +345,16 @@ GET    /documents                                                # 列表: [{id,
 DELETE /documents/{documentId}                                   # 删除(同时删向量索引)
 ```
 
+### Skill 管理
+
+```http
+POST   /skills                     multipart/form-data; field=file   # 上传 Skill(.md/.markdown/.txt)
+GET    /skills                                                        # 列表: [{id,name,fileName,fileSize,contentLength,enabled,uploadedAt}]
+GET    /skills/{id}/content                                           # 读取 Skill 内容: {content: "..."}
+PATCH  /skills/{id}/enabled?enabled=true                               # 切换启用/禁用状态
+DELETE /skills/{id}                                                    # 删除 Skill(同时删磁盘文件)
+```
+
 ### 健康检查
 
 ```http
@@ -336,6 +384,8 @@ GET /health   → {"status":"UP","timestamp":"2026-08-08T00:00:00"}
 | `agent.tools.file.workspace-dir`                | `./workspace`              | 文件工具沙箱根目录                                   |
 | `agent.tools.file.max-read-bytes`               | 204800 (200KB)             | 读上限                                         |
 | `agent.tools.file.max-write-bytes`              | 512000 (500KB)             | 写上限                                         |
+| `agent.skill.enabled`                           | `true`                     | 是否启用 Skill 注入                                |
+| `agent.skill.dir`                               | `./data/skills`            | Skill 文件存储目录                                 |
 
 ***
 
@@ -379,8 +429,11 @@ public class WeatherTool implements Tool {
 ### 工具调用链路（执行顺序）
 
 ```
-User 消息
-  → buildMessages(记忆 + RAG 检索片段)
+User 消息(含可选附件)
+  → buildMessages:
+     1. System Prompt = 默认提示词 + Skill 注入(所有已启用 Skill 内容) + RAG 检索片段
+     2. 历史对话(Redis)
+     3. 用户消息(附件内容以"附件[N]: 文件名 + 内容块"格式拼到消息前)
   → chatWithToolsFlow / chatWithToolsSync
      → while (true):
         1. 带 tools schema 调 DeepSeek
@@ -400,8 +453,12 @@ User 消息
 | 文件类型     | read\_file 仅允许白名单文本扩展名；禁止读取未知/二进制                                                |
 | 内容大小     | 读写都有字节上限，超限返回结构化错误，不会抛出 500                                                      |
 | Shell 命令 | execute\_shell 直接执行宿主命令，生产环境建议 `agent.tools.enabled=false` 或仅内网部署                |
+| Shell 编码 | PowerShell 子进程强制 `chcp 65001` + UTF-8 输出，Java 端用 UTF-8 读取，避免中文乱码              |
+| Skill 文件 | 仅允许 .md/.markdown/.txt 格式；元数据存 Redis，文件存磁盘 `./data/skills/`                      |
+| 对话附件     | 前端本地读取文本内容，二进制文件(pdf/docx/图片)直接拒绝；附件内容超 200KB 自动截断                            |
 | API Key  | 通过环境变量注入，**禁止**写进 `application.yml` 或提交 Git                                      |
 | 文档上传     | 限制 50MB/文件，100MB/请求；仅解析文本内容，不执行宏/脚本                                              |
+| HTTP 编码  | 全局强制 UTF-8（server.servlet.encoding + WebMvcConfig），SSE/JSON 响应均带 charset=UTF-8  |
 
 ***
 
@@ -420,6 +477,16 @@ User 消息
    - 设置 `enableTools=true`（前端默认已开）
    - 换用 deepseek-v4-pro 等工具调用能力更强的模型
    - 在问题里明确提及工具名，如："用 list\_files 列出 workspace"
+6. **Shell 命令输出中文乱码？**
+   - 已修复：ShellTool 会自动执行 `chcp 65001` + 设置 UTF-8 输出编码，Java 端用 UTF-8 读取
+   - 如仍出现乱码，检查 PowerShell 版本是否支持 `-OutputFormat Text` 参数
+7. **Skill 上传后没生效？**
+   - 在 Skill 管理页确认该 Skill 的开关是否为"启用"状态
+   - 检查 `agent.skill.enabled` 是否为 `true`
+   - 查看后端日志 `logs/agent.log` 确认 Skill 上传成功
+8. **附件文件无法上传？**
+   - 确认文件格式为文本类型（md/txt/csv/json/py/java 等）
+   - PDF/Word/图片等二进制文件会被前端直接拒绝，请先转换为 txt/md
 
 ***
 
