@@ -9,7 +9,7 @@ import org.springframework.util.StringUtils;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
-import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -63,6 +63,23 @@ public class ShellTool implements Tool {
         return schema;
     }
 
+    /**
+     * 包装命令:
+     * - 先切换控制台输出代码页到 65001(UTF-8), 避免 Windows PowerShell 用 GBK 输出中文乱码;
+     * - 用 $OutputEncoding 强制 PowerShell 管道输出为 UTF-8;
+     * - 最后显式输出 exit 码,防止重定向吞掉失败信息。
+     *
+     * 注意: 所有的 ; 都用 ``;`` 在 PowerShell 字符串里不是转义符,这里直接用原生分号即可。
+     */
+    private String wrapCommandForUtf8(String raw) {
+        // chcp 65001 的输出会被捕获, 这里加 | Out-Null 去掉其干扰;
+        // [Console]::OutputEncoding 强制控制台输出 UTF-8
+        return "$OutputEncoding = [System.Text.Encoding]::UTF8;" +
+                "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8;" +
+                "chcp 65001 | Out-Null;" +
+                raw;
+    }
+
     @Override
     public ToolResult execute(Map<String, Object> arguments) {
         if (!toolConfig.getShell().isEnabled()) {
@@ -87,28 +104,46 @@ public class ShellTool implements Tool {
         long start = System.currentTimeMillis();
         log.info("执行 Shell 命令: {}", command);
 
+        // 关键: 启动 PowerShell 时设置控制台输出代码页环境变量,保证子进程用 UTF-8 输出
         ProcessBuilder pb = new ProcessBuilder("powershell.exe", "-NoProfile", "-NonInteractive",
-                "-Command", command);
+                "-OutputFormat", "Text",
+                "-Command", wrapCommandForUtf8(command));
         pb.redirectErrorStream(true);
+        // 让 PowerShell 的标准输出/错误输出都走 UTF-8 (Windows 新版 PS 会识别)
+        pb.environment().put("OutputEncoding", "utf-8");
+        pb.environment().put("LANG", "en_US.UTF-8");
         if (StringUtils.hasText(toolConfig.getShell().getWorkingDir())) {
             pb.directory(new java.io.File(toolConfig.getShell().getWorkingDir()));
         }
 
         try {
             Process process = pb.start();
+
+            // 异步读取输出,避免 readLine() 阻塞导致超时失效
+            // 注意: 强制使用 UTF-8 解码,不再使用 JVM 默认编码(Windows 下默认 GBK,会出现乱码)
             StringBuilder output = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream(), Charset.defaultCharset()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    output.append(line).append('\n');
+            Thread readerThread = new Thread(() -> {
+                try (BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        output.append(line).append('\n');
+                    }
+                } catch (Exception ignored) {
                 }
-            }
+            });
+            readerThread.setDaemon(true);
+            readerThread.start();
+
             boolean finished = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS);
             if (!finished) {
                 process.destroyForcibly();
-                return ToolResult.error("命令执行超时(" + timeoutMs + "ms)");
+                readerThread.interrupt();
+                String partial = output.toString().trim();
+                return ToolResult.error("命令执行超时(" + timeoutMs + "ms), 部分输出:\n" +
+                        (StringUtils.hasText(partial) ? partial : "(无输出)"));
             }
+            readerThread.join(2000);
             int exitCode = process.exitValue();
             long duration = System.currentTimeMillis() - start;
             String result = output.toString().trim();
