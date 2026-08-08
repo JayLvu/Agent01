@@ -1,7 +1,7 @@
 <template>
   <div class="message-item" :class="`message-${message.role}`">
     <div class="avatar">
-      <i :class="avatarIcon"></i>
+      <el-icon><component :is="avatarIcon" /></el-icon>
     </div>
     <div class="content">
       <div class="role">{{ roleLabel }}</div>
@@ -10,9 +10,9 @@
         <div v-if="message.toolCalls && message.toolCalls.length" class="tool-calls">
           <div v-for="(tc, i) in message.toolCalls" :key="i" class="tool-call-item">
             <div class="tool-call-header">
-              <i :class="toolIcon(tc.toolName)"></i>
+              <el-icon><component :is="toolIcon(tc.toolName)" /></el-icon>
               <span class="tool-name">{{ tc.toolName }}</span>
-              <el-tag size="mini" :type="toolStatusType(tc)">{{ toolStatusText(tc) }}</el-tag>
+              <el-tag size="small" :type="toolStatusType(tc)">{{ toolStatusText(tc) }}</el-tag>
               <span v-if="tc.durationMs" class="tool-duration">{{ tc.durationMs }}ms</span>
             </div>
             <div class="tool-args"><code>{{ tc.arguments }}</code></div>
@@ -27,58 +27,58 @@
   </div>
 </template>
 
-<script>
+<script setup>
+import { computed } from 'vue'
 import { marked } from 'marked'
 
-export default {
-  name: 'MessageItem',
-  props: {
-    message: {
-      type: Object,
-      required: true
-    }
-  },
-  computed: {
-    avatarIcon() {
-      return this.message.role === 'user' ? 'el-icon-user' : 'el-icon-cpu'
-    },
-    roleLabel() {
-      return this.message.role === 'user' ? '我' : 'AI 助手'
-    },
-    // assistant 回复用 Markdown 渲染,user 消息纯文本
-    shouldRenderMarkdown() {
-      return this.message.role === 'assistant' && this.message.content
-    },
-    renderedContent() {
-      if (!this.message.content) return ''
-      try {
-        return marked.parse(this.message.content, { breaks: true })
-      } catch {
-        return this.message.content
-      }
-    }
-  },
-  methods: {
-    toolIcon(name) {
-      const map = {
-        execute_shell: 'el-icon-monitor',
-        query_datetime: 'el-icon-time',
-        calculate: 'el-icon-cpu',
-        list_files: 'el-icon-folder-opened',
-        read_file: 'el-icon-document',
-        write_file: 'el-icon-edit-outline'
-      }
-      return map[name] || 'el-icon-s-tools'
-    },
-    toolStatusType(tc) {
-      if (tc.pending) return 'warning'
-      return tc.success ? 'success' : 'danger'
-    },
-    toolStatusText(tc) {
-      if (tc.pending) return '执行中'
-      return tc.success ? '成功' : '失败'
-    }
+const props = defineProps({
+  message: {
+    type: Object,
+    required: true
   }
+})
+
+const avatarIcon = computed(() =>
+  props.message.role === 'user' ? 'User' : 'Cpu'
+)
+
+const roleLabel = computed(() =>
+  props.message.role === 'user' ? '我' : 'AI 助手'
+)
+
+const shouldRenderMarkdown = computed(() =>
+  props.message.role === 'assistant' && props.message.content
+)
+
+const renderedContent = computed(() => {
+  if (!props.message.content) return ''
+  try {
+    return marked.parse(props.message.content, { breaks: true })
+  } catch {
+    return props.message.content
+  }
+})
+
+function toolIcon(name) {
+  const map = {
+    execute_shell: 'Monitor',
+    query_datetime: 'Clock',
+    calculate: 'Cpu',
+    list_files: 'FolderOpened',
+    read_file: 'Document',
+    write_file: 'EditPen'
+  }
+  return map[name] || 'Tools'
+}
+
+function toolStatusType(tc) {
+  if (tc.pending) return 'warning'
+  return tc.success ? 'success' : 'danger'
+}
+
+function toolStatusText(tc) {
+  if (tc.pending) return '执行中'
+  return tc.success ? '成功' : '失败'
 }
 </script>
 
@@ -182,7 +182,7 @@ export default {
     gap: 6px;
     margin-bottom: 4px;
 
-    i {
+    .el-icon {
       color: #e6a23c;
     }
 

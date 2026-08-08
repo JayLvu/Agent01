@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { Message } from 'element-ui'
+import { ElMessage } from 'element-plus'
 
 // axios 实例: 统一拦截错误、附加 baseURL
 const service = axios.create({
@@ -19,7 +19,7 @@ service.interceptors.response.use(
   response => response.data,
   error => {
     const msg = error.response?.data?.message || error.message || '请求失败'
-    Message.error(msg)
+    ElMessage.error(msg)
     return Promise.reject(error)
   }
 )

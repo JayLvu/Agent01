@@ -3,9 +3,9 @@
       <div class="content-wrapper">
         <!-- 上传区 -->
         <el-card class="upload-card" shadow="never">
-          <div slot="header">
-            <span><i class="el-icon-upload"></i> 上传文档</span>
-          </div>
+          <template #header>
+            <span><el-icon><Upload /></el-icon> 上传文档</span>
+          </template>
           <el-upload
             ref="upload"
             drag
@@ -16,18 +16,20 @@
             :on-exceed="handleExceed"
             accept=".pdf,.docx,.txt,.md"
           >
-            <i class="el-icon-upload-filled"></i>
+            <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
             <div class="el-upload__text">
               将文件拖到此处,或<em>点击上传</em>
             </div>
-            <div class="el-upload__tip" slot="tip">
-              支持 PDF / DOCX / TXT / MD 格式,单文件不超过 50MB
-            </div>
+            <template #tip>
+              <div class="el-upload__tip">
+                支持 PDF / DOCX / TXT / MD 格式,单文件不超过 50MB
+              </div>
+            </template>
           </el-upload>
           <div class="upload-actions">
             <el-button
               type="primary"
-              icon="el-icon-upload"
+              :icon="Upload"
               :loading="uploading"
               :disabled="!pendingFile"
               @click="uploadFile"
@@ -39,16 +41,19 @@
 
         <!-- 文档列表 -->
         <el-card class="list-card" shadow="never">
-          <div slot="header" class="list-header">
-            <span><i class="el-icon-document"></i> 文档库</span>
-            <el-button
-              type="text"
-              icon="el-icon-refresh"
-              @click="loadDocuments"
-            >
-              刷新
-            </el-button>
-          </div>
+          <template #header>
+            <div class="list-header">
+              <span><el-icon><Document /></el-icon> 文档库</span>
+              <el-button
+                type="primary"
+                link
+                :icon="Refresh"
+                @click="loadDocuments"
+              >
+                刷新
+              </el-button>
+            </div>
+          </template>
 
           <el-table
             v-loading="loading"
@@ -59,34 +64,34 @@
             <el-table-column type="index" label="#" width="50" />
             <el-table-column prop="fileName" label="文件名" min-width="200" show-overflow-tooltip />
             <el-table-column prop="fileType" label="类型" width="80">
-              <template slot-scope="{ row }">
-                <el-tag :type="typeTag(row.fileType)" size="mini">
+              <template #default="{ row }">
+                <el-tag :type="typeTag(row.fileType)" size="small">
                   {{ row.fileType?.toUpperCase() }}
                 </el-tag>
               </template>
             </el-table-column>
             <el-table-column prop="chunkCount" label="分块数" width="90" align="center" />
             <el-table-column prop="totalChars" label="字符数" width="100" align="center">
-              <template slot-scope="{ row }">
+              <template #default="{ row }">
                 {{ formatNumber(row.totalChars) }}
               </template>
             </el-table-column>
             <el-table-column prop="fileSize" label="大小" width="90" align="center">
-              <template slot-scope="{ row }">
+              <template #default="{ row }">
                 {{ formatSize(row.fileSize) }}
               </template>
             </el-table-column>
             <el-table-column prop="uploadedAt" label="上传时间" width="170">
-              <template slot-scope="{ row }">
+              <template #default="{ row }">
                 {{ formatTime(row.uploadedAt) }}
               </template>
             </el-table-column>
             <el-table-column label="操作" width="100" align="center" fixed="right">
-              <template slot-scope="{ row }">
+              <template #default="{ row }">
                 <el-button
                   type="danger"
-                  size="mini"
-                  icon="el-icon-delete"
+                  size="small"
+                  :icon="Delete"
                   circle
                   @click="removeDocument(row)"
                 />
@@ -96,98 +101,94 @@
         </el-card>
       </div>
     </div>
-  </div>
 </template>
 
-<script>
+<script setup>
+import { ref, onMounted } from 'vue'
+import { Upload, UploadFilled, Document, Refresh, Delete } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import documentApi from '@/api/document'
 
-export default {
-  name: 'Documents',
-  data() {
-    return {
-      documents: [],
-      loading: false,
-      uploading: false,
-      pendingFile: null
-    }
-  },
-  created() {
-    this.loadDocuments()
-  },
-  methods: {
-    async loadDocuments() {
-      this.loading = true
-      try {
-        this.documents = await documentApi.list()
-      } catch (e) {
-        // 错误已在拦截器中提示
-      } finally {
-        this.loading = false
-      }
-    },
+const documents = ref([])
+const loading = ref(false)
+const uploading = ref(false)
+const pendingFile = ref(null)
+const upload = ref(null)
 
-    handleFileChange(file) {
-      this.pendingFile = file.raw
-    },
+onMounted(() => {
+  loadDocuments()
+})
 
-    handleExceed() {
-      this.$message.warning('一次只能上传一个文件,请先移除已选文件')
-    },
-
-    async uploadFile() {
-      if (!this.pendingFile) return
-      this.uploading = true
-      try {
-        const doc = await documentApi.upload(this.pendingFile)
-        this.$message.success(`文档上传成功,共 ${doc.chunkCount} 个分块`)
-        this.pendingFile = null
-        this.$refs.upload.clearFiles()
-        this.loadDocuments()
-      } catch (e) {
-        // 错误已在拦截器中提示
-      } finally {
-        this.uploading = false
-      }
-    },
-
-    async removeDocument(row) {
-      try {
-        await this.$confirm(
-          `确定删除文档「${row.fileName}」?此操作不可恢复。`,
-          '删除确认',
-          { type: 'warning' }
-        )
-        await documentApi.remove(row.id)
-        this.$message.success('文档已删除')
-        this.loadDocuments()
-      } catch (e) {
-        // 用户取消
-      }
-    },
-
-    typeTag(type) {
-      const map = { pdf: 'danger', docx: 'primary', txt: 'info', md: 'success' }
-      return map[type] || 'info'
-    },
-
-    formatSize(bytes) {
-      if (!bytes) return '-'
-      if (bytes < 1024) return bytes + ' B'
-      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-      return (bytes / 1024 / 1024).toFixed(2) + ' MB'
-    },
-
-    formatNumber(n) {
-      if (!n && n !== 0) return '-'
-      return n.toLocaleString()
-    },
-
-    formatTime(t) {
-      if (!t) return '-'
-      return t.replace('T', ' ').split('.')[0]
-    }
+async function loadDocuments() {
+  loading.value = true
+  try {
+    documents.value = await documentApi.list()
+  } catch (e) {
+    // 错误已在拦截器中提示
+  } finally {
+    loading.value = false
   }
+}
+
+function handleFileChange(file) {
+  pendingFile.value = file.raw
+}
+
+function handleExceed() {
+  ElMessage.warning('一次只能上传一个文件,请先移除已选文件')
+}
+
+async function uploadFile() {
+  if (!pendingFile.value) return
+  uploading.value = true
+  try {
+    const doc = await documentApi.upload(pendingFile.value)
+    ElMessage.success(`文档上传成功,共 ${doc.chunkCount} 个分块`)
+    pendingFile.value = null
+    upload.value?.clearFiles()
+    loadDocuments()
+  } catch (e) {
+    // 错误已在拦截器中提示
+  } finally {
+    uploading.value = false
+  }
+}
+
+async function removeDocument(row) {
+  try {
+    await ElMessageBox.confirm(
+      `确定删除文档「${row.fileName}」?此操作不可恢复。`,
+      '删除确认',
+      { type: 'warning' }
+    )
+    await documentApi.remove(row.id)
+    ElMessage.success('文档已删除')
+    loadDocuments()
+  } catch (e) {
+    // 用户取消
+  }
+}
+
+function typeTag(type) {
+  const map = { pdf: 'danger', docx: 'primary', txt: 'info', md: 'success' }
+  return map[type] || 'info'
+}
+
+function formatSize(bytes) {
+  if (!bytes) return '-'
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / 1024 / 1024).toFixed(2) + ' MB'
+}
+
+function formatNumber(n) {
+  if (!n && n !== 0) return '-'
+  return n.toLocaleString()
+}
+
+function formatTime(t) {
+  if (!t) return '-'
+  return t.replace('T', ' ').split('.')[0]
 }
 </script>
 
@@ -209,13 +210,14 @@ export default {
 .upload-card, .list-card {
   border-radius: 8px;
 
-  ::v-deep .el-card__header {
+  :deep(.el-card__header) {
     padding: 12px 20px;
     font-weight: 500;
 
-    i {
+    .el-icon {
       margin-right: 6px;
       color: #409eff;
+      vertical-align: middle;
     }
   }
 }
@@ -230,9 +232,10 @@ export default {
   justify-content: space-between;
   align-items: center;
 
-  span i {
+  span .el-icon {
     margin-right: 6px;
     color: #409eff;
+    vertical-align: middle;
   }
 }
 </style>

@@ -2,8 +2,8 @@
   <div class="chat-page">
       <!-- 消息列表区 -->
       <div ref="messageList" class="message-list">
-        <div v-if="messages.length === 0" class="empty-state">
-          <i class="el-icon-chat-dot-square"></i>
+        <div v-if="store.messages.length === 0" class="empty-state">
+          <el-icon class="empty-icon"><ChatDotSquare /></el-icon>
           <p>开始与 AI 助手对话吧!</p>
           <div class="suggestions">
             <el-tag
@@ -18,7 +18,7 @@
         </div>
 
         <message-item
-          v-for="(msg, idx) in messages"
+          v-for="(msg, idx) in store.messages"
           :key="idx"
           :message="msg"
         />
@@ -29,18 +29,16 @@
         <div class="toolbar">
           <el-tooltip content="清空当前会话" placement="top">
             <el-button
-              icon="el-icon-delete"
-              size="mini"
+              :icon="Delete"
+              size="small"
               circle
-              :disabled="loading || !sessionId"
+              :disabled="loading || !store.sessionId"
               @click="clearSession"
             />
           </el-tooltip>
           <el-tooltip :content="streamMode ? '流式模式(逐字输出)' : '同步模式(整段返回)'" placement="top">
             <el-switch
               v-model="streamMode"
-              active-color="#409eff"
-              inactive-color="#dcdfe6"
               :disabled="loading"
             />
           </el-tooltip>
@@ -49,8 +47,6 @@
           <el-tooltip :content="enableRag ? '已启用 RAG 文档检索' : '未启用 RAG'" placement="top">
             <el-switch
               v-model="enableRag"
-              active-color="#67c23a"
-              inactive-color="#dcdfe6"
               :disabled="loading"
             />
           </el-tooltip>
@@ -59,8 +55,6 @@
           <el-tooltip :content="enableTools ? '已启用工具调用(LLM 自主决策)' : '未启用工具调用'" placement="top">
             <el-switch
               v-model="enableTools"
-              active-color="#e6a23c"
-              inactive-color="#dcdfe6"
               :disabled="loading"
             />
           </el-tooltip>
@@ -75,13 +69,13 @@
             :autosize="{ minRows: 2, maxRows: 6 }"
             placeholder="输入消息,Enter 发送,Shift+Enter 换行"
             :disabled="loading"
-            @keydown.enter.native.exact.prevent="handleEnter"
+            @keydown.enter.exact.prevent="handleEnter"
           />
           <div class="actions">
             <el-button
               v-if="loading"
               type="danger"
-              icon="el-icon-video-pause"
+              :icon="VideoPause"
               @click="stopGeneration"
             >
               停止
@@ -89,7 +83,7 @@
             <el-button
               v-else
               type="primary"
-              icon="el-icon-s-promotion"
+              :icon="Promotion"
               :disabled="!inputText.trim()"
               @click="sendMessage()"
             >
@@ -99,182 +93,160 @@
         </div>
       </div>
     </div>
-  </div>
 </template>
 
-<script>
+<script setup>
+import { ref, watch, nextTick } from 'vue'
+import { Delete, VideoPause, Promotion } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import MessageItem from '@/components/MessageItem.vue'
 import chatApi from '@/api/chat'
 import { streamChat } from '@/utils/sse'
+import { useChatStore } from '@/store'
 
-export default {
-  name: 'Chat',
-  components: { MessageItem },
-  data() {
-    return {
-      inputText: '',
-      loading: false,
-      streamMode: true,
-      enableRag: true,
-      enableTools: true,
-      suggestions: [
-        '现在几点了？',
-        '帮我计算 (12+8)*5 等于多少',
-        '查看当前目录下有哪些文件',
-        '用 200 字解释什么是 RAG'
-      ],
-      abortController: null
+const store = useChatStore()
+
+const inputText = ref('')
+const loading = ref(false)
+const streamMode = ref(true)
+const enableRag = ref(true)
+const enableTools = ref(true)
+const abortController = ref(null)
+const messageList = ref(null)
+
+const suggestions = [
+  '现在几点了？',
+  '帮我计算 (12+8)*5 等于多少',
+  '查看当前目录下有哪些文件',
+  '用 200 字解释什么是 RAG'
+]
+
+watch(() => store.messages, () => {
+  nextTick(scrollToBottom)
+}, { deep: true })
+
+function handleEnter() {
+  if (!loading.value) sendMessage()
+}
+
+async function sendMessage(presetText) {
+  const text = (presetText || inputText.value).trim()
+  if (!text || loading.value) return
+
+  // 1. 立即显示用户消息
+  store.addMessage({ role: 'user', content: text })
+  inputText.value = ''
+  loading.value = true
+
+  // 2. 添加占位 assistant 消息(流式模式标记 streaming)
+  store.addMessage({
+    role: 'assistant',
+    content: '',
+    streaming: streamMode.value
+  })
+
+  try {
+    if (streamMode.value) {
+      await sendStream(text)
+    } else {
+      await sendSync(text)
     }
-  },
-  computed: {
-    messages() {
-      return this.$store.state.messages
-    },
-    sessionId() {
-      return this.$store.state.sessionId
-    }
-  },
-  watch: {
-    messages: {
-      handler() {
-        this.$nextTick(this.scrollToBottom)
-      },
-      deep: true
-    }
-  },
-  methods: {
-    handleEnter() {
-      if (!this.loading) this.sendMessage()
-    },
-
-    async sendMessage(presetText) {
-      const text = (presetText || this.inputText).trim()
-      if (!text || this.loading) return
-
-      // 1. 立即显示用户消息
-      this.$store.commit('ADD_MESSAGE', { role: 'user', content: text })
-      this.inputText = ''
-      this.loading = true
-
-      // 2. 添加占位 assistant 消息(流式模式标记 streaming)
-      this.$store.commit('ADD_MESSAGE', {
-        role: 'assistant',
-        content: '',
-        streaming: this.streamMode
-      })
-
-      try {
-        if (this.streamMode) {
-          await this.sendStream(text)
-        } else {
-          await this.sendSync(text)
-        }
-      } catch (err) {
-        // 错误时把占位消息改为错误提示
-        this.$store.commit('UPDATE_LAST_MESSAGE', {
-          role: 'assistant',
-          content: `⚠️ 对话失败: ${err.message || '未知错误'}`
-        })
-        this.$store.commit('FINISH_STREAMING', 'assistant')
-      } finally {
-        this.loading = false
-        this.abortController = null
-      }
-    },
-
-    /** 同步对话 */
-    async sendSync(text) {
-      const resp = await chatApi.chat({
-        sessionId: this.sessionId || undefined,
-        message: text,
-        enableRag: this.enableRag,
-        enableTools: this.enableTools,
-        stream: false
-      })
-      if (resp.sessionId && resp.sessionId !== this.sessionId) {
-        this.$store.commit('SET_SESSION', resp.sessionId)
-      }
-      this.$store.commit('UPDATE_LAST_MESSAGE', {
-        role: 'assistant',
-        content: resp.content
-      })
-      this.$store.commit('FINISH_STREAMING', 'assistant')
-    },
-
-    /** 流式对话(SSE) */
-    sendStream(text) {
-      return new Promise((resolve, reject) => {
-        this.abortController = streamChat(
-          {
-            sessionId: this.sessionId || undefined,
-            message: text,
-            enableRag: this.enableRag,
-            enableTools: this.enableTools,
-            stream: true
-          },
-          {
-            onSession: (sessionId) => {
-              // 首个事件: 后端回传的 sessionId(首次对话时为新生成)
-              if (sessionId && sessionId !== this.sessionId) {
-                this.$store.commit('SET_SESSION', sessionId)
-              }
-            },
-            onToken: (token) => {
-              this.$store.commit('APPEND_TO_LAST', { role: 'assistant', chunk: token })
-            },
-            onToolCall: (info) => {
-              this.$store.commit('ADD_TOOL_CALL', {
-                toolName: info.toolName,
-                arguments: info.arguments,
-                callId: info.callId
-              })
-            },
-            onToolResult: (info) => {
-              this.$store.commit('SET_TOOL_RESULT', {
-                callId: info.callId,
-                result: info.result,
-                success: info.success,
-                durationMs: info.durationMs
-              })
-            },
-            onDone: () => {
-              this.$store.commit('FINISH_STREAMING', 'assistant')
-              resolve()
-            },
-            onError: (err) => reject(err)
-          }
-        )
-      })
-    },
-
-    /** 停止生成 */
-    stopGeneration() {
-      if (this.abortController) {
-        this.abortController.abort()
-      }
-    },
-
-    /** 清空会话 */
-    async clearSession() {
-      try {
-        await this.$confirm('确定清空当前会话历史?', '提示', {
-          type: 'warning'
-        })
-        if (this.sessionId) {
-          await chatApi.clearSession(this.sessionId)
-        }
-        this.$store.dispatch('clearSession')
-        this.$message.success('会话已清空')
-      } catch (e) {
-        // 用户取消
-      }
-    },
-
-    scrollToBottom() {
-      const el = this.$refs.messageList
-      if (el) el.scrollTop = el.scrollHeight
-    }
+  } catch (err) {
+    store.updateLastMessage('assistant', `⚠️ 对话失败: ${err.message || '未知错误'}`)
+    store.finishStreaming('assistant')
+  } finally {
+    loading.value = false
+    abortController.value = null
   }
+}
+
+/** 同步对话 */
+async function sendSync(text) {
+  const resp = await chatApi.chat({
+    sessionId: store.sessionId || undefined,
+    message: text,
+    enableRag: enableRag.value,
+    enableTools: enableTools.value,
+    stream: false
+  })
+  if (resp.sessionId && resp.sessionId !== store.sessionId) {
+    store.setSession(resp.sessionId)
+  }
+  store.updateLastMessage('assistant', resp.content)
+  store.finishStreaming('assistant')
+}
+
+/** 流式对话(SSE) */
+function sendStream(text) {
+  return new Promise((resolve, reject) => {
+    abortController.value = streamChat(
+      {
+        sessionId: store.sessionId || undefined,
+        message: text,
+        enableRag: enableRag.value,
+        enableTools: enableTools.value,
+        stream: true
+      },
+      {
+        onSession: (sessionId) => {
+          if (sessionId && sessionId !== store.sessionId) {
+            store.setSession(sessionId)
+          }
+        },
+        onToken: (token) => {
+          store.appendToLast('assistant', token)
+        },
+        onToolCall: (info) => {
+          store.addToolCall({
+            toolName: info.toolName,
+            arguments: info.arguments,
+            callId: info.callId
+          })
+        },
+        onToolResult: (info) => {
+          store.setToolResult({
+            callId: info.callId,
+            result: info.result,
+            success: info.success,
+            durationMs: info.durationMs
+          })
+        },
+        onDone: () => {
+          store.finishStreaming('assistant')
+          resolve()
+        },
+        onError: (err) => reject(err)
+      }
+    )
+  })
+}
+
+/** 停止生成 */
+function stopGeneration() {
+  if (abortController.value) {
+    abortController.value.abort()
+  }
+}
+
+/** 清空会话 */
+async function clearSession() {
+  try {
+    await ElMessageBox.confirm('确定清空当前会话历史?', '提示', {
+      type: 'warning'
+    })
+    if (store.sessionId) {
+      await chatApi.clearSession(store.sessionId)
+    }
+    store.clearSession()
+    ElMessage.success('会话已清空')
+  } catch (e) {
+    // 用户取消
+  }
+}
+
+function scrollToBottom() {
+  const el = messageList.value
+  if (el) el.scrollTop = el.scrollHeight
 }
 </script>
 
@@ -300,7 +272,7 @@ export default {
   padding: 60px 20px;
   color: #909399;
 
-  i {
+  .empty-icon {
     font-size: 64px;
     color: #c0c4cc;
   }
@@ -356,7 +328,7 @@ export default {
     gap: 12px;
     align-items: flex-end;
 
-    ::v-deep .el-textarea__inner {
+    :deep(.el-textarea__inner) {
       resize: none;
       border-radius: 8px;
       padding: 10px 14px;

@@ -1,25 +1,25 @@
 <template>
   <div class="about-page">
       <el-card shadow="never" class="about-card">
-        <h1><i class="el-icon-cpu"></i> AI 对话 Agent</h1>
-        <p class="subtitle">基于 Spring Boot 3 + DeepSeek + Vue 2 的智能对话系统</p>
+        <h1><el-icon class="title-icon"><Cpu /></el-icon> AI 对话 Agent</h1>
+        <p class="subtitle">基于 Spring Boot 3 + DeepSeek + Vue 3 的智能对话系统</p>
 
         <el-divider content-position="left">核心功能</el-divider>
         <ul class="features">
-          <li><i class="el-icon-chat-dot-round"></i> 多轮对话(同步 + SSE 流式)</li>
-          <li><i class="el-icon-document"></i> RAG 文档检索(PDF/Word/TXT/MD)</li>
-          <li><i class="el-icon-memory"></i> 对话记忆管理(Redis + TTL)</li>
-          <li><i class="el-icon-connection"></i> 标准 RESTful HTTP API</li>
+          <li><el-icon><ChatDotRound /></el-icon> 多轮对话(同步 + SSE 流式)</li>
+          <li><el-icon><Document /></el-icon> RAG 文档检索(PDF/Word/TXT/MD)</li>
+          <li><el-icon><Coin /></el-icon> 对话记忆管理(Redis + TTL)</li>
+          <li><el-icon><Connection /></el-icon> LLM 工具调用(Function Calling)</li>
         </ul>
 
         <el-divider content-position="left">技术栈</el-divider>
         <div class="tech-stack">
-          <el-tag size="medium">Spring Boot 3</el-tag>
-          <el-tag size="medium" type="success">Vue 2.7</el-tag>
-          <el-tag size="medium" type="warning">Element UI</el-tag>
-          <el-tag size="medium" type="danger">DeepSeek</el-tag>
-          <el-tag size="medium" type="info">Redis</el-tag>
-          <el-tag size="medium" type="info">WebClient</el-tag>
+          <el-tag>Spring Boot 3</el-tag>
+          <el-tag type="success">Vue 3</el-tag>
+          <el-tag type="warning">Element Plus</el-tag>
+          <el-tag type="danger">DeepSeek</el-tag>
+          <el-tag type="info">Redis</el-tag>
+          <el-tag type="info">Vite</el-tag>
         </div>
 
         <el-divider content-position="left">API 端点</el-divider>
@@ -36,13 +36,9 @@
         <p class="footer">© 2026 VanzyLiu · <a href="https://github.com/VanzyLiu/Agent01" target="_blank">GitHub</a></p>
       </el-card>
     </div>
-  </div>
 </template>
 
-<script>
-export default {
-  name: 'About'
-}
+<script setup>
 </script>
 
 <style lang="scss" scoped>
@@ -61,8 +57,13 @@ export default {
     font-size: 28px;
     margin: 0 0 8px;
     color: #303133;
+    display: flex;
+    align-items: center;
 
-    i { color: #409eff; margin-right: 8px; }
+    .title-icon {
+      color: #409eff;
+      margin-right: 8px;
+    }
   }
 
   .subtitle {
@@ -79,8 +80,10 @@ export default {
   li {
     padding: 8px 0;
     color: #606266;
+    display: flex;
+    align-items: center;
 
-    i {
+    .el-icon {
       color: #409eff;
       margin-right: 8px;
       width: 18px;

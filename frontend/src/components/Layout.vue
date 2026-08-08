@@ -3,7 +3,7 @@
     <!-- 侧边栏 -->
     <el-aside :width="isCollapse ? '64px' : '220px'" class="sidebar">
       <div class="logo">
-        <i class="el-icon-cpu"></i>
+        <el-icon class="logo-icon"><Cpu /></el-icon>
         <span v-show="!isCollapse">AI Agent</span>
       </div>
       <el-menu
@@ -19,8 +19,8 @@
           :key="route.path"
           :index="'/' + route.path"
         >
-          <i :class="route.meta.icon"></i>
-          <span slot="title">{{ route.meta.title }}</span>
+          <el-icon><component :is="route.meta.icon" /></el-icon>
+          <template #title>{{ route.meta.title }}</template>
         </el-menu-item>
       </el-menu>
     </el-aside>
@@ -29,16 +29,14 @@
     <el-container>
       <el-header class="header">
         <div class="header-left">
-          <i
-            :class="isCollapse ? 'el-icon-s-unfold' : 'el-icon-s-fold'"
-            class="collapse-btn"
-            @click="isCollapse = !isCollapse"
-          ></i>
+          <el-icon class="collapse-btn" @click="isCollapse = !isCollapse">
+            <component :is="isCollapse ? 'Expand' : 'Fold'" />
+          </el-icon>
           <span class="page-title">{{ currentTitle }}</span>
         </div>
         <div class="header-right">
-          <el-tag v-if="sessionId" type="info" size="small">
-            会话: {{ sessionId.slice(0, 8) }}...
+          <el-tag v-if="store.sessionId" type="info" size="small">
+            会话: {{ store.sessionId.slice(0, 8) }}...
           </el-tag>
         </div>
       </el-header>
@@ -50,31 +48,23 @@
   </el-container>
 </template>
 
-<script>
-import { mapGetters } from 'vuex'
+<script setup>
+import { ref, computed } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useChatStore } from '@/store'
 
-export default {
-  name: 'Layout',
-  data() {
-    return {
-      isCollapse: false
-    }
-  },
-  computed: {
-    ...mapGetters(['sessionId']),
-    menuRoutes() {
-      // 从根路由的 children 中获取菜单项
-      const root = this.$router.options.routes.find(r => r.path === '/')
-      return root ? root.children.filter(r => r.meta && r.meta.title) : []
-    },
-    activeRoute() {
-      return this.$route.path
-    },
-    currentTitle() {
-      return this.$route.meta?.title || ''
-    }
-  }
-}
+const store = useChatStore()
+const route = useRoute()
+const router = useRouter()
+const isCollapse = ref(false)
+
+const menuRoutes = computed(() => {
+  const root = router.options.routes.find(r => r.path === '/')
+  return root ? root.children.filter(r => r.meta && r.meta.title) : []
+})
+
+const activeRoute = computed(() => route.path)
+const currentTitle = computed(() => route.meta?.title || '')
 </script>
 
 <style lang="scss" scoped>
@@ -97,13 +87,13 @@ export default {
     font-weight: 600;
     gap: 8px;
 
-    i {
+    .logo-icon {
       font-size: 24px;
       color: #409eff;
     }
   }
 
-  ::v-deep .el-menu {
+  :deep(.el-menu) {
     border-right: none;
   }
 }
