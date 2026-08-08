@@ -4,6 +4,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -36,4 +37,7 @@ public class ChatRequest {
 
     /** 可选: 额外元数据(如用户标识、来源等) */
     private Map<String, Object> metadata;
+
+    /** 可选: 随消息一起发送的附件文件(前端已读取内容,后端自动拼接到用户消息前) */
+    private List<AttachmentFile> attachments;
 }

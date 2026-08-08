@@ -9,9 +9,14 @@ build/
 *.iws
 *.ipr
 .vscode/
+.vite/
 .settings/
 .project
 .classpath
+
+# Node 依赖 & 构建产物
+frontend/node_modules/
+frontend/dist/
 
 # 日志
 logs/
@@ -33,6 +38,9 @@ data/docs/
 
 # 向量库索引数据
 data/vector/
+
+# Skill 存储目录(运行时生成)
+data/skills/
 
 # 文件工具沙箱目录(运行时生成)
 workspace/

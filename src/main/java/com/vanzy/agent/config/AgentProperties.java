@@ -26,6 +26,9 @@ public class AgentProperties {
     /** 文件操作工具配置(workspace 沙箱) */
     private FileToolsConfig file = new FileToolsConfig();
 
+    /** Skill 注入配置 */
+    private SkillConfig skill = new SkillConfig();
+
     @Data
     public static class Memory {
         /** 保留最近 N 轮对话 */
@@ -88,5 +91,15 @@ public class AgentProperties {
 
         /** 单次写入最大字节数 */
         private int maxWriteBytes = 500 * 1024; // 500KB
+    }
+
+    /** Skill 注入配置: 每次对话自动读取已启用 Skill 并拼接到 System Prompt */
+    @Data
+    public static class SkillConfig {
+        /** 是否启用 Skill 注入功能 */
+        private boolean enabled = true;
+
+        /** Skill 文件存储目录 */
+        private String dir = "./data/skills";
     }
 }

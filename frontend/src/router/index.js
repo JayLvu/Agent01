@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import Layout from '@/components/Layout.vue'
 import Chat from '@/views/Chat.vue'
 import Documents from '@/views/Documents.vue'
+import Skills from '@/views/Skills.vue'
 import About from '@/views/About.vue'
 
 const routes = [
@@ -21,6 +22,12 @@ const routes = [
         name: 'Documents',
         component: Documents,
         meta: { title: '文档管理', icon: 'Document' }
+      },
+      {
+        path: 'skills',
+        name: 'Skills',
+        component: Skills,
+        meta: { title: 'Skill 管理', icon: 'MagicStick' }
       },
       {
         path: 'about',

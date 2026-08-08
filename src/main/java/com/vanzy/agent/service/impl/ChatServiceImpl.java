@@ -11,9 +11,11 @@ import com.vanzy.agent.model.DeepSeekDtos.DeepSeekResponse;
 import com.vanzy.agent.model.DeepSeekDtos.DeepSeekStreamChunk;
 import com.vanzy.agent.model.DocumentChunk;
 import com.vanzy.agent.model.StreamEvent;
+import com.vanzy.agent.model.AttachmentFile;
 import com.vanzy.agent.rag.RagService;
 import com.vanzy.agent.service.ChatService;
 import com.vanzy.agent.service.MemoryService;
+import com.vanzy.agent.skill.SkillService;
 import com.vanzy.agent.tool.Tool;
 import com.vanzy.agent.tool.ToolRegistry;
 import com.vanzy.agent.tool.ToolResult;
@@ -58,11 +60,12 @@ public class ChatServiceImpl implements ChatService {
     private final ObjectMapper objectMapper;
     private final DeepSeekProperties deepSeekProperties;
     private final AgentProperties agentProperties;
+    private final SkillService skillService;
 
     public ChatServiceImpl(DeepSeekClient deepSeekClient, MemoryService memoryService,
                            RagService ragService, ToolRegistry toolRegistry,
                            ObjectMapper objectMapper, DeepSeekProperties deepSeekProperties,
-                           AgentProperties agentProperties) {
+                           AgentProperties agentProperties, SkillService skillService) {
         this.deepSeekClient = deepSeekClient;
         this.memoryService = memoryService;
         this.ragService = ragService;
@@ -70,6 +73,7 @@ public class ChatServiceImpl implements ChatService {
         this.objectMapper = objectMapper;
         this.deepSeekProperties = deepSeekProperties;
         this.agentProperties = agentProperties;
+        this.skillService = skillService;
     }
 
     @Override
@@ -77,7 +81,8 @@ public class ChatServiceImpl implements ChatService {
         long start = System.currentTimeMillis();
         String sessionId = ensureSessionId(request.getSessionId());
         List<ChatMessage> messages = buildMessages(request, sessionId);
-        memoryService.saveMessage(sessionId, ChatMessage.user(request.getMessage()));
+        String savedUserMsg = buildUserMessageWithAttachments(request.getMessage(), request.getAttachments());
+        memoryService.saveMessage(sessionId, ChatMessage.user(savedUserMsg));
 
         boolean toolsEnabled = Boolean.TRUE.equals(request.getEnableTools())
                 && agentProperties.getTools().isEnabled();
@@ -161,7 +166,8 @@ public class ChatServiceImpl implements ChatService {
         List<ChatMessage> messages = buildMessages(request, sessionId);
 
         // 流式场景: 先保存 user 消息,assistant 消息流式收集后保存
-        memoryService.saveMessage(sessionId, ChatMessage.user(request.getMessage()));
+        String savedUserMsg = buildUserMessageWithAttachments(request.getMessage(), request.getAttachments());
+        memoryService.saveMessage(sessionId, ChatMessage.user(savedUserMsg));
 
         boolean toolsEnabled = Boolean.TRUE.equals(request.getEnableTools())
                 && agentProperties.getTools().isEnabled();
@@ -303,7 +309,7 @@ public class ChatServiceImpl implements ChatService {
     }
 
     /**
-     * 构建完整消息列表: system + history + (RAG context) + user
+     * 构建完整消息列表: system + history + (RAG context) + user(含附件)
      */
     private List<ChatMessage> buildMessages(ChatRequest request, String sessionId) {
         List<ChatMessage> messages = new ArrayList<>();
@@ -312,7 +318,15 @@ public class ChatServiceImpl implements ChatService {
         String systemPrompt = StringUtils.hasText(request.getSystemPrompt())
                 ? request.getSystemPrompt() : DEFAULT_SYSTEM_PROMPT;
 
-        // 2. RAG 上下文增强(若启用)
+        // 2. Skill 注入(若启用): 把所有已启用 Skill 的内容追加到 System Prompt
+        if (agentProperties.getSkill().isEnabled()) {
+            String skillsPrompt = skillService.buildEnabledSkillsPrompt();
+            if (StringUtils.hasText(skillsPrompt)) {
+                systemPrompt = systemPrompt + skillsPrompt;
+            }
+        }
+
+        // 3. RAG 上下文增强(若启用)
         boolean enableRag = request.getEnableRag() == null || request.getEnableRag();
         if (enableRag && agentProperties.getRag().isEnabled()) {
             String ragContext = ragService.retrieveContext(request.getMessage());
@@ -322,14 +336,52 @@ public class ChatServiceImpl implements ChatService {
         }
         messages.add(ChatMessage.system(systemPrompt));
 
-        // 3. 历史对话
+        // 4. 历史对话
         messages.addAll(memoryService.getHistory(sessionId));
 
-        // 4. 当前用户消息(同步场景: 还未保存,这里追加)
-        // 注: 流式场景在外层已保存,但消息列表里仍需追加
-        messages.add(ChatMessage.user(request.getMessage()));
+        // 5. 当前用户消息 + 附件内容
+        // 附件内容以"文件名 + 内容块"的形式插在用户消息前,让 LLM 知道这是用户提供的文件
+        String userMessage = buildUserMessageWithAttachments(request.getMessage(), request.getAttachments());
+        messages.add(ChatMessage.user(userMessage));
 
         return messages;
+    }
+
+    /**
+     * 把附件内容以可读的格式拼接到用户消息前
+     *
+     * 输出形如:
+     * ---
+     * 附件文件[1]: report.md (12345 bytes)
+     * ```
+     * 这里是文件原始内容
+     * ```
+     * ---
+     * 用户问题: xxxx
+     */
+    private String buildUserMessageWithAttachments(String message, List<AttachmentFile> attachments) {
+        if (attachments == null || attachments.isEmpty()) {
+            return message == null ? "" : message;
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("用户上传了 ").append(attachments.size()).append(" 个附件文件, 内容如下:\n\n");
+        int idx = 0;
+        for (AttachmentFile a : attachments) {
+            idx++;
+            sb.append("--- 附件[").append(idx).append("]: ")
+                    .append(a.getFileName() != null ? a.getFileName() : "未命名文件");
+            if (a.getFileSize() != null) sb.append(" (").append(a.getFileSize()).append(" bytes)");
+            sb.append(" ---\n");
+            String content = a.getContent() == null ? "" : a.getContent();
+            if (content.length() > agentProperties.getFile().getMaxReadBytes()) {
+                content = content.substring(0, agentProperties.getFile().getMaxReadBytes())
+                        + "\n...[文件过长,已截断]";
+            }
+            sb.append(content).append("\n\n");
+        }
+        sb.append("---\n请基于以上附件内容回答用户问题。\n\n用户问题: ");
+        sb.append(message == null ? "" : message);
+        return sb.toString();
     }
 
     private String extractDeltaContent(DeepSeekStreamChunk chunk) {

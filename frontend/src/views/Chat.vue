@@ -26,6 +26,20 @@
 
       <!-- 输入区 -->
       <div class="input-area">
+        <!-- 已选附件展示 -->
+        <div v-if="attachments.length > 0" class="attachments-bar">
+          <div
+            v-for="(a, idx) in attachments"
+            :key="idx"
+            class="attach-item"
+          >
+            <el-icon class="attach-icon"><Paperclip /></el-icon>
+            <span class="attach-name" :title="a.fileName">{{ a.fileName }}</span>
+            <span class="attach-size">{{ formatSize(a.fileSize) }}</span>
+            <el-icon class="attach-close" @click="removeAttachment(idx)"><Close /></el-icon>
+          </div>
+        </div>
+
         <div class="toolbar">
           <el-tooltip content="清空当前会话" placement="top">
             <el-button
@@ -36,6 +50,20 @@
               @click="clearSession"
             />
           </el-tooltip>
+
+          <!-- 附件上传按钮 -->
+          <el-upload
+            :show-file-list="false"
+            multiple
+            accept=".md,.markdown,.txt,.csv,.json,.xml,.yaml,.yml,.py,.java,.js,.html,.vue,.log,.pdf,.docx"
+            :before-upload="beforeAttachmentUpload"
+            class="attach-uploader"
+          >
+            <el-tooltip content="上传附件(文件内容将拼入消息)" placement="top">
+              <el-button :icon="Paperclip" size="small" circle />
+            </el-tooltip>
+          </el-upload>
+
           <el-tooltip :content="streamMode ? '流式模式(逐字输出)' : '同步模式(整段返回)'" placement="top">
             <el-switch
               v-model="streamMode"
@@ -67,7 +95,7 @@
             type="textarea"
             :rows="2"
             :autosize="{ minRows: 2, maxRows: 6 }"
-            placeholder="输入消息,Enter 发送,Shift+Enter 换行"
+            placeholder="输入消息,Enter 发送,Shift+Enter 换行；可先在工具栏点 📎 附带文件一起分析"
             :disabled="loading"
             @keydown.enter.exact.prevent="handleEnter"
           />
@@ -84,7 +112,7 @@
               v-else
               type="primary"
               :icon="Promotion"
-              :disabled="!inputText.trim()"
+              :disabled="!canSend"
               @click="sendMessage()"
             >
               发送
@@ -96,8 +124,8 @@
 </template>
 
 <script setup>
-import { ref, watch, nextTick } from 'vue'
-import { Delete, VideoPause, Promotion } from '@element-plus/icons-vue'
+import { ref, watch, nextTick, computed } from 'vue'
+import { Delete, VideoPause, Promotion, Paperclip, Close } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import MessageItem from '@/components/MessageItem.vue'
 import chatApi from '@/api/chat'
@@ -114,6 +142,12 @@ const enableTools = ref(true)
 const abortController = ref(null)
 const messageList = ref(null)
 
+/** 附件列表: [{fileName, fileType, fileSize, content}] */
+const attachments = ref([])
+
+/** 能否发送: 有文字或有附件 */
+const canSend = computed(() => !loading.value && (inputText.value.trim() || attachments.value.length > 0))
+
 const suggestions = [
   '现在几点了？',
   '帮我计算 (12+8)*5 等于多少',
@@ -129,13 +163,65 @@ function handleEnter() {
   if (!loading.value) sendMessage()
 }
 
+/** 上传附件前: 读取文件文本内容(本地处理,不上传到服务器) */
+async function beforeAttachmentUpload(file) {
+  try {
+    const content = await readFileAsText(file)
+    attachments.value.push({
+      fileName: file.name,
+      fileType: file.type || detectType(file.name),
+      fileSize: file.size,
+      content
+    })
+    ElMessage.success(`已附加文件: ${file.name}`)
+  } catch (e) {
+    ElMessage.error(`读取文件 ${file.name} 失败: ${e.message || e}`)
+  }
+  return false // 阻止 el-upload 默认上传
+}
+
+/** 读取文件为文本；对 pdf/docx 直接提示不支持, 避免引入解析依赖 */
+function readFileAsText(file) {
+  const binExt = /\.(pdf|docx?|xlsx?|pptx?|png|jpe?g|gif|zip|rar|7z|exe)$/i
+  if (binExt.test(file.name)) {
+    return Promise.reject(new Error('暂不支持二进制文件 (pdf/docx/图片等) 作为附件，请先转换为 txt/md 再上传'))
+  }
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result)
+    reader.onerror = () => reject(new Error('读取失败'))
+    reader.readAsText(file, 'utf-8')
+  })
+}
+
+function detectType(name) {
+  const m = name.match(/\.(\w+)$/)
+  return m ? m[1].toLowerCase() : ''
+}
+
+function removeAttachment(idx) {
+  attachments.value.splice(idx, 1)
+}
+
+function formatSize(bytes) {
+  if (bytes == null) return '-'
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / 1024 / 1024).toFixed(2) + ' MB'
+}
+
 async function sendMessage(presetText) {
   const text = (presetText || inputText.value).trim()
-  if (!text || loading.value) return
+  // 允许仅附带文件 + 空文字
+  if (!text && attachments.value.length === 0) return
+  if (loading.value) return
 
-  // 1. 立即显示用户消息
-  store.addMessage({ role: 'user', content: text })
+  // 1. 立即显示用户消息(若有附件,则在消息里提示)
+  const displayText = buildUserDisplayText(text, attachments.value)
+  store.addMessage({ role: 'user', content: displayText })
   inputText.value = ''
+  const currentAttachments = [...attachments.value]
+  attachments.value = []
   loading.value = true
 
   // 2. 添加占位 assistant 消息(流式模式标记 streaming)
@@ -147,9 +233,9 @@ async function sendMessage(presetText) {
 
   try {
     if (streamMode.value) {
-      await sendStream(text)
+      await sendStream(text, currentAttachments)
     } else {
-      await sendSync(text)
+      await sendSync(text, currentAttachments)
     }
   } catch (err) {
     store.updateLastMessage('assistant', `⚠️ 对话失败: ${err.message || '未知错误'}`)
@@ -160,14 +246,21 @@ async function sendMessage(presetText) {
   }
 }
 
+function buildUserDisplayText(text, atts) {
+  if (!atts || atts.length === 0) return text || ''
+  let head = `[附加 ${atts.length} 个文件: ` + atts.map(a => a.fileName).join(', ') + ']\n\n'
+  return head + (text || '(无额外文字说明)')
+}
+
 /** 同步对话 */
-async function sendSync(text) {
+async function sendSync(text, atts) {
   const resp = await chatApi.chat({
     sessionId: store.sessionId || undefined,
-    message: text,
+    message: text || '请分析附件内容',
     enableRag: enableRag.value,
     enableTools: enableTools.value,
-    stream: false
+    stream: false,
+    attachments: atts.length ? atts : undefined
   })
   if (resp.sessionId && resp.sessionId !== store.sessionId) {
     store.setSession(resp.sessionId)
@@ -177,15 +270,16 @@ async function sendSync(text) {
 }
 
 /** 流式对话(SSE) */
-function sendStream(text) {
+function sendStream(text, atts) {
   return new Promise((resolve, reject) => {
     abortController.value = streamChat(
       {
         sessionId: store.sessionId || undefined,
-        message: text,
+        message: text || '请分析附件内容',
         enableRag: enableRag.value,
         enableTools: enableTools.value,
-        stream: true
+        stream: true,
+        attachments: atts.length ? atts : undefined
       },
       {
         onSession: (sessionId) => {
@@ -310,6 +404,54 @@ function scrollToBottom() {
   margin: 0 auto;
   width: 100%;
 
+  .attachments-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
+
+    .attach-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: #ecf5ff;
+      color: #409eff;
+      border: 1px solid #d9ecff;
+      padding: 4px 8px 4px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      max-width: 320px;
+
+      .attach-icon {
+        font-size: 14px;
+      }
+
+      .attach-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 180px;
+      }
+
+      .attach-size {
+        color: #909399;
+      }
+
+      .attach-close {
+        cursor: pointer;
+        font-size: 14px;
+        color: #909399;
+        border-radius: 50%;
+        padding: 2px;
+
+        &:hover {
+          color: #f56c6c;
+          background: rgba(245, 108, 108, 0.1);
+        }
+      }
+    }
+  }
+
   .toolbar {
     display: flex;
     align-items: center;
@@ -321,6 +463,10 @@ function scrollToBottom() {
       color: #909399;
       margin-right: 8px;
     }
+  }
+
+  .attach-uploader {
+    display: inline-flex;
   }
 
   .input-box {
