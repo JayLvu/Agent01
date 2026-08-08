@@ -81,14 +81,29 @@ public class DeepSeekClient {
     }
 
     /**
-     * 流式对话(SSE): 返回 token 流
+     * 流式对话(SSE): 返回 token 流(不带工具)
      *
      * @param messages 对话消息列表
      * @return DeepSeek 流式响应块 Flux
      */
     public Flux<DeepSeekStreamChunk> chatStream(List<ChatMessage> messages) {
+        return chatStream(messages, null);
+    }
+
+    /**
+     * 流式对话(SSE): 返回 token 流(支持工具调用)
+     *
+     * @param messages 对话消息列表
+     * @param tools    工具 schema 列表(为 null 则不带 tools)
+     * @return DeepSeek 流式响应块 Flux
+     */
+    public Flux<DeepSeekStreamChunk> chatStream(List<ChatMessage> messages, List<Map<String, Object>> tools) {
         DeepSeekRequest request = buildRequest(messages, true);
-        log.debug("调用 DeepSeek 流式对话, 消息数: {}", messages.size());
+        if (tools != null && !tools.isEmpty()) {
+            request.setTools(tools);
+            request.setToolChoice("auto");
+        }
+        log.debug("调用 DeepSeek 流式对话, 消息数: {}, 是否带工具: {}", messages.size(), tools != null);
 
         return webClient.post()
                 .uri(CHAT_PATH)

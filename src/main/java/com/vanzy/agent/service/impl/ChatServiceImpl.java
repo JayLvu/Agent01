@@ -27,6 +27,7 @@ import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.FluxSink;
+import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -200,13 +201,15 @@ public class ChatServiceImpl implements ChatService {
     }
 
     /**
-     * 工具调用流式对话: 同步循环 + 事件推送
+     * 工具调用流式对话: 真正的 LLM 流式调用 + while 循环多轮工具调用
      *
-     * 流程:
-     * 1. 带 tools 调用 LLM(同步)
-     * 2. 若返回 tool_calls: 推送 ToolCall 事件 -> 执行工具 -> 推送 ToolResult 事件 -> 回传结果 -> 回到步骤1
-     * 3. 若返回纯文本: 推送 Token 事件,结束
-     * 4. 达到最大迭代次数仍未完成: 推送错误
+     * 流程(每一轮):
+     * 1. 带 tools 调用 LLM **流式**接口
+     * 2. 逐 chunk 推送 Token 事件(实时显示 LLM 思考/文本)
+     * 3. 跨 chunk 按 index 累加 tool_calls 增量(arguments 是分段拼接的 JSON 字符串)
+     * 4. 流结束后:
+     *    - 若存在 tool_calls: 推送 ToolCall 事件 -> 执行工具 -> 推送 ToolResult 事件 -> 回传 assistant + tool 消息 -> 回到步骤 1 继续下一轮
+     *    - 若纯文本: 结束
      */
     private Flux<StreamEvent> chatWithToolsFlow(String sessionId, List<ChatMessage> messages) {
         List<Map<String, Object>> toolsSchema = toolRegistry.buildToolsSchema();
@@ -215,51 +218,95 @@ public class ChatServiceImpl implements ChatService {
         return Flux.<StreamEvent>create(sink -> {
             List<ChatMessage> working = new ArrayList<>(messages);
             int iter = 0;
+            boolean completed = false;
             try {
                 while (true) {
                     iter++;
-                    DeepSeekResponse resp = deepSeekClient.chat(working, toolsSchema).block(timeout);
-                    if (resp == null || CollectionUtils.isEmpty(resp.getChoices())) {
-                        sink.next(new StreamEvent.Error("DeepSeek 返回空响应"));
-                        break;
-                    }
-                    DeepSeekResponse.Choice choice = resp.getChoices().get(0);
-                    ChatMessage msg = choice.getMessage();
-                    List<ChatMessage.ToolCall> toolCalls = msg.getToolCalls();
 
-                    if (toolCalls != null && !toolCalls.isEmpty()) {
-                        working.add(ChatMessage.assistantWithToolCalls(toolCalls));
+                    // 本轮累积: 文本内容 + 工具调用(跨 chunk 按 index 拼接 arguments)
+                    StringBuilder assistantContent = new StringBuilder();
+                    List<ChatMessage.ToolCall> accumToolCalls = new ArrayList<>();
 
-                        for (ChatMessage.ToolCall tc : toolCalls) {
+                    // 消费一轮流式响应(阻塞等待整轮流完成,逐 token 往外推送)
+                    deepSeekClient.chatStream(working, toolsSchema)
+                            .doOnNext(chunk -> {
+                                if (CollectionUtils.isEmpty(chunk.getChoices())) return;
+                                DeepSeekStreamChunk.Choice choice = chunk.getChoices().get(0);
+
+                                // 1) 增量文本: 有就推送 Token + 累积到总内容
+                                String token = extractDeltaContent(chunk);
+                                if (StringUtils.hasText(token)) {
+                                    assistantContent.append(token);
+                                    sink.next(new StreamEvent.Token(token));
+                                }
+
+                                // 2) 增量 tool_calls: 按 index 对齐,跨 chunk 拼接 arguments(分段 JSON)
+                                if (choice.getDelta() == null
+                                        || CollectionUtils.isEmpty(choice.getDelta().getToolCalls())) {
+                                    return;
+                                }
+                                for (ChatMessage.ToolCall deltaTc : choice.getDelta().getToolCalls()) {
+                                    int idx = deltaTc.getIndex() != null ? deltaTc.getIndex() : 0;
+                                    while (accumToolCalls.size() <= idx) {
+                                        accumToolCalls.add(ChatMessage.ToolCall.builder().index(idx).build());
+                                    }
+                                    ChatMessage.ToolCall target = accumToolCalls.get(idx);
+                                    if (deltaTc.getId() != null) target.setId(deltaTc.getId());
+                                    if (deltaTc.getType() != null) target.setType(deltaTc.getType());
+                                    if (deltaTc.getFunction() == null) continue;
+                                    ChatMessage.Function fn = target.getFunction();
+                                    if (fn == null) {
+                                        fn = new ChatMessage.Function();
+                                        target.setFunction(fn);
+                                    }
+                                    if (deltaTc.getFunction().getName() != null) {
+                                        fn.setName(deltaTc.getFunction().getName());
+                                    }
+                                    if (deltaTc.getFunction().getArguments() != null) {
+                                        fn.setArguments((fn.getArguments() == null ? "" : fn.getArguments())
+                                                + deltaTc.getFunction().getArguments());
+                                    }
+                                }
+                            })
+                            .blockLast(timeout); // 阻塞直到本轮流结束(或超时)
+
+                    // ---------- 有工具调用 → 执行工具后继续下一轮 ----------
+                    if (!accumToolCalls.isEmpty()) {
+                        // 把 assistant 消息(携带 tool_calls + 少量文本)加入上下文
+                        working.add(ChatMessage.builder()
+                                .role("assistant")
+                                .content(assistantContent.length() > 0 ? assistantContent.toString() : null)
+                                .toolCalls(accumToolCalls)
+                                .build());
+
+                        for (ChatMessage.ToolCall tc : accumToolCalls) {
                             String toolName = tc.getFunction() != null ? tc.getFunction().getName() : "";
-                            String argsJson = tc.getFunction() != null ? tc.getFunction().getArguments() : "{}";
+                            String argsJson = (tc.getFunction() != null && tc.getFunction().getArguments() != null)
+                                    ? tc.getFunction().getArguments() : "{}";
                             sink.next(new StreamEvent.ToolCall(toolName, argsJson, tc.getId()));
 
                             ToolResult result = executeToolCall(toolName, argsJson);
                             sink.next(new StreamEvent.ToolResult(toolName, tc.getId(), result.getContent(),
                                     result.isSuccess(), result.getDurationMs()));
-
                             working.add(ChatMessage.toolResult(tc.getId(), toolName, result.getContent()));
                         }
-                        continue;
+                        continue; // 回到 while 头部进行下一轮流式调用
                     }
 
-                    String content = msg.getContent();
-                    log.info("最终回复: finishReason={}, contentLen={}", choice.getFinishReason(), content == null ? 0 : content.length());
-                    if (content == null) content = "";
-                    memoryService.saveMessage(sessionId, ChatMessage.assistant(content));
-                    for (String chunk : splitToChunks(content, 8)) {
-                        sink.next(new StreamEvent.Token(chunk));
-                    }
-                    log.info("工具调用对话完成: session={}, 迭代={}", sessionId, iter);
+                    // ---------- 无工具调用 → 结束(文本已在 doOnNext 逐 token 推送) ----------
+                    String finalContent = assistantContent.toString();
+                    memoryService.saveMessage(sessionId, ChatMessage.assistant(finalContent));
+                    log.info("工具调用流式对话完成: session={}, 迭代={}, contentLen={}",
+                            sessionId, iter, finalContent.length());
                     sink.complete();
+                    completed = true;
                     return;
                 }
             } catch (Exception e) {
-                log.error("工具调用对话异常: session={}", sessionId, e);
-                sink.next(new StreamEvent.Error(e.getMessage()));
+                log.error("工具调用流式对话异常: session={}", sessionId, e);
+                if (!completed) sink.next(new StreamEvent.Error(e.getMessage()));
             } finally {
-                sink.complete();
+                if (!completed) sink.complete();
             }
         }, FluxSink.OverflowStrategy.BUFFER);
     }

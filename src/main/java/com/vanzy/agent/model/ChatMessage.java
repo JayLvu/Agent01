@@ -69,6 +69,8 @@ public class ChatMessage {
     @AllArgsConstructor
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public static class ToolCall {
+        /** 流式中对齐用的 index(仅解析增量时使用,回传 LLM 时可选) */
+        private Integer index;
         /** 调用 ID(LLM 生成,回传 tool 消息时需对应) */
         private String id;
         /** 类型,固定 "function" */

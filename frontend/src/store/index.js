@@ -16,12 +16,14 @@ export const useChatStore = defineStore('chat', () => {
 
   function addMessage(message) {
     messages.value.push(message)
+    messages.value = [...messages.value]
   }
 
   function updateLastMessage(role, content) {
     for (let i = messages.value.length - 1; i >= 0; i--) {
-      if (messages.value[i].role === role && messages.value[i].streaming) {
+      if (messages.value[i].role === role) {
         messages.value[i].content = content
+        messages.value = [...messages.value]
         break
       }
     }
@@ -30,7 +32,9 @@ export const useChatStore = defineStore('chat', () => {
   function appendToLast(role, chunk) {
     for (let i = messages.value.length - 1; i >= 0; i--) {
       if (messages.value[i].role === role && messages.value[i].streaming) {
+        // Vue 3 响应式: 直接修改 + 数组整体替换做双重兜底,避免某些情况下不刷新
         messages.value[i].content += chunk
+        messages.value = [...messages.value]
         break
       }
     }
@@ -40,6 +44,7 @@ export const useChatStore = defineStore('chat', () => {
     for (let i = messages.value.length - 1; i >= 0; i--) {
       if (messages.value[i].role === role && messages.value[i].streaming) {
         messages.value[i].streaming = false
+        messages.value = [...messages.value]
         break
       }
     }
@@ -51,6 +56,7 @@ export const useChatStore = defineStore('chat', () => {
       if (m.role === 'assistant' && m.streaming) {
         if (!m.toolCalls) m.toolCalls = []
         m.toolCalls.push({ toolName, arguments: args, callId, pending: true })
+        messages.value = [...messages.value]
         break
       }
     }
@@ -66,6 +72,7 @@ export const useChatStore = defineStore('chat', () => {
           tc.success = success
           tc.durationMs = durationMs
           tc.pending = false
+          messages.value = [...messages.value]
           break
         }
       }

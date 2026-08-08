@@ -83,6 +83,13 @@ public class DeepSeekDtos {
         public static class Delta {
             private String role;
             private String content;
+            /**
+             * 流式工具调用的增量片段(OpenAI/DeepSeek 规范)。
+             * 注意: 在流式中,同一个 tool_call[i] 会跨多个 chunk 增量拼接 arguments;
+             *       index 字段用于对齐归属的 tool_call 序号。
+             */
+            @JsonProperty("tool_calls")
+            private List<ChatMessage.ToolCall> toolCalls;
         }
     }
 }

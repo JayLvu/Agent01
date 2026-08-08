@@ -19,9 +19,17 @@
             <div v-if="tc.result" class="tool-result" :class="{ 'is-error': !tc.success }">{{ tc.result }}</div>
           </div>
         </div>
-        <div v-if="shouldRenderMarkdown" class="markdown-body" v-html="renderedContent"></div>
-        <div v-else class="text-content">{{ message.content }}</div>
-        <span v-if="message.streaming" class="cursor">|</span>
+        <!--
+          streaming 期间用纯文本: 避免逐 token 调用 marked.parse 导致光标抖动/跳行
+          流式结束(或 user 消息)后再切 markdown 渲染
+        -->
+        <div
+          v-if="message.content && !message.streaming && message.role === 'assistant'"
+          class="markdown-body"
+          v-html="renderedContent"
+        ></div>
+        <div v-else-if="message.content" class="text-content">{{ message.content }}</div>
+        <span v-if="message.streaming && message.role === 'assistant'" class="cursor">|</span>
       </div>
     </div>
   </div>
