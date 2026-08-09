@@ -30,6 +30,6 @@ public class ToolResult {
     }
 
     public static ToolResult error(String message) {
-        return ToolResult.builder().success(false).content("工具执行失败: " + message).build();
+        return ToolResult.builder().success(false).content(message).build();
     }
 }

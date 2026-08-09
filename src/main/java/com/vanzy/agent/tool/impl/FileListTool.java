@@ -90,13 +90,56 @@ public class FileListTool implements Tool {
                 return ToolResult.error("路径不是目录: " + toDisplay(sandboxRoot, target));
             }
 
-            List<String> lines = new ArrayList<>();
-            lines.add("[目录] " + toDisplay(sandboxRoot, target));
-            lines.add("");
-            listFiles(target, sandboxRoot, 0, recursive, lines);
+            // 1) 先收集条目(便于生成表格 + 缩进文本两种视图)
+            List<FileEntry> entries = new ArrayList<>();
+            listEntries(target, sandboxRoot, 0, recursive, entries);
 
-            String output = String.join("\n", lines);
-            log.info("list_files 成功: {} 条目={}", toDisplay(sandboxRoot, target), Math.max(0, lines.size() - 2));
+            StringBuilder sb = new StringBuilder();
+            String displayPath = toDisplay(sandboxRoot, target);
+
+            // --- Markdown 表格视图(主视图): 前后强制空行,避免被 LLM/Markdown 误解析为标题/hr ---
+            sb.append("\n\n");
+            sb.append("**目录**: `").append(displayPath).append("`  ");
+            sb.append(recursive ? "(递归)" : "(仅当前层级)");
+            sb.append("  **条目数**: ").append(entries.size()).append("\n\n");
+            sb.append("| 类型 | 名称/路径 | 大小 | 最后修改时间 |\n");
+            sb.append("| :--- | :--- | ---: | :--- |\n");
+            for (FileEntry e : entries) {
+                sb.append("| ");
+                if (e.isDir) {
+                    sb.append("📁 目录 ");
+                } else {
+                    sb.append("📄 文件 ");
+                }
+                sb.append("| `").append(escapeMd(e.displayPath)).append("` | ");
+                if (e.isDir) {
+                    sb.append("— | — ");
+                } else {
+                    sb.append(humanSize(e.sizeBytes)).append(" | ").append(e.modified).append(' ');
+                }
+                sb.append("|\n");
+            }
+            if (entries.isEmpty()) {
+                sb.append("| — | _(空目录)_ | — | — |\n");
+            }
+            sb.append('\n');
+
+            // --- 纯文本缩进视图(折叠,便于 LLM 感知层级) ---
+            sb.append("\n<details><summary>缩进视图(含层级)</summary>\n\n```text\n");
+            sb.append("[目录] ").append(displayPath).append('\n');
+            for (FileEntry e : entries) {
+                sb.append("  ".repeat(e.depth));
+                if (e.isDir) {
+                    sb.append("[DIR]  ").append(e.name).append("/\n");
+                } else {
+                    sb.append(String.format("[FILE] %-40s  %6d KB  %s%n",
+                            e.name, e.sizeBytes / 1024, e.modified));
+                }
+            }
+            sb.append("```\n</details>\n\n");
+
+            String output = sb.toString();
+            log.info("list_files 成功: {} 条目={}", displayPath, entries.size());
             return ToolResult.success(output);
         } catch (SecurityException e) {
             return ToolResult.error("路径越权: " + e.getMessage());
@@ -106,25 +149,60 @@ public class FileListTool implements Tool {
         }
     }
 
-    private void listFiles(Path dir, Path sandboxRoot, int depth, boolean recursive, List<String> lines) {
+    // --- 条目数据结构 + 递归收集 ---
+    private static class FileEntry {
+        final boolean isDir;
+        final String name;
+        final String displayPath; // 相对沙箱根的完整路径
+        final int depth;            // 相对本次目标目录的深度
+        final long sizeBytes;
+        final String modified;
+
+        FileEntry(boolean isDir, String name, String displayPath, int depth, long sizeBytes, String modified) {
+            this.isDir = isDir;
+            this.name = name;
+            this.displayPath = displayPath;
+            this.depth = depth;
+            this.sizeBytes = sizeBytes;
+            this.modified = modified;
+        }
+    }
+
+    private void listEntries(Path dir, Path sandboxRoot, int depth, boolean recursive, List<FileEntry> out) {
         File[] items = dir.toFile().listFiles();
         if (items == null) return;
+        // 排序: 目录在前,文件在后;各自按名称升序
+        java.util.Arrays.sort(items, (a, b) -> {
+            if (a.isDirectory() != b.isDirectory()) return a.isDirectory() ? -1 : 1;
+            return a.getName().compareToIgnoreCase(b.getName());
+        });
+        DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
         for (File item : items) {
-            String indent = "  ".repeat(depth);
+            String relToSandbox = toDisplay(sandboxRoot, item.toPath());
+            String modified = LocalDateTime
+                    .ofInstant(Instant.ofEpochMilli(item.lastModified()), ZoneId.systemDefault())
+                    .format(fmt);
             if (item.isDirectory()) {
-                lines.add(indent + "[DIR]  " + item.getName() + "/");
+                out.add(new FileEntry(true, item.getName(), relToSandbox, depth, 0L, modified));
                 if (recursive) {
-                    listFiles(item.toPath(), sandboxRoot, depth + 1, true, lines);
+                    listEntries(item.toPath(), sandboxRoot, depth + 1, true, out);
                 }
             } else {
-                long size = item.length();
-                String modified = LocalDateTime
-                        .ofInstant(Instant.ofEpochMilli(item.lastModified()), ZoneId.systemDefault())
-                        .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-                lines.add(String.format("%s[FILE] %-40s  %6d KB  %s",
-                        indent, item.getName(), size / 1024, modified));
+                out.add(new FileEntry(false, item.getName(), relToSandbox, depth, item.length(), modified));
             }
         }
+    }
+
+    private static String humanSize(long bytes) {
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
+        if (bytes < 1024L * 1024 * 1024) return String.format("%.1f MB", bytes / (1024.0 * 1024));
+        return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
+    }
+
+    private static String escapeMd(String s) {
+        // 只转义表格关键字符: 竖线/反斜杠; 保留路径显示可读性
+        return s.replace("\\", "\\\\").replace("|", "\\|").replace("`", "\\`");
     }
 
     static Path getSandboxRoot() {

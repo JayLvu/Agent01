@@ -50,19 +50,19 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  function addToolCall({ toolName, arguments: args, callId }) {
+  function addToolCall({ toolName, arguments: args, callId, startedAt }) {
     for (let i = messages.value.length - 1; i >= 0; i--) {
       const m = messages.value[i]
       if (m.role === 'assistant' && m.streaming) {
         if (!m.toolCalls) m.toolCalls = []
-        m.toolCalls.push({ toolName, arguments: args, callId, pending: true })
+        m.toolCalls.push({ toolName, arguments: args, callId, startedAt, pending: true })
         messages.value = [...messages.value]
         break
       }
     }
   }
 
-  function setToolResult({ callId, result, success, durationMs }) {
+  function setToolResult({ callId, result, success, durationMs, startedAt, finishedAt }) {
     for (let i = messages.value.length - 1; i >= 0; i--) {
       const m = messages.value[i]
       if (m.role === 'assistant' && m.toolCalls) {
@@ -71,6 +71,8 @@ export const useChatStore = defineStore('chat', () => {
           tc.result = result
           tc.success = success
           tc.durationMs = durationMs
+          if (startedAt != null) tc.startedAt = startedAt
+          tc.finishedAt = finishedAt
           tc.pending = false
           messages.value = [...messages.value]
           break

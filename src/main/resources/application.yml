@@ -43,11 +43,11 @@ spring:
 
 # DeepSeek 配置
 deepseek:
-  api-key: ${DEEK_SEEK_API_KEY:}
-  base-url: ${DEEK_SEEK_BASE_URL:https://api.deepseek.com}
-  model: ${DEEK_SEEK_MODEL:deepseek-chat}
-  temperature: ${DEEK_SEEK_TEMPERATURE:0.7}
-  max-tokens: ${DEEK_SEEK_MAX_TOKENS:2048}
+  api-key: ${DEEPSEEK_API_KEY:${DEEK_SEEK_API_KEY:}}
+  base-url: ${DEEPSEEK_BASE_URL:${DEEK_SEEK_BASE_URL:https://api.deepseek.com}}
+  model: ${DEEPSEEK_MODEL:${DEEK_SEEK_MODEL:deepseek-chat}}
+  temperature: ${DEEPSEEK_TEMPERATURE:${DEEK_SEEK_TEMPERATURE:0.7}}
+  max-tokens: ${DEEPSEEK_MAX_TOKENS:${DEEK_SEEK_MAX_TOKENS:2048}}
   timeout: 60s
 
 # Agent 配置

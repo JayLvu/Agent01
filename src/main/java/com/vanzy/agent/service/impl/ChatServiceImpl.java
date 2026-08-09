@@ -283,11 +283,13 @@ public class ChatServiceImpl implements ChatService {
                             String toolName = tc.getFunction() != null ? tc.getFunction().getName() : "";
                             String argsJson = (tc.getFunction() != null && tc.getFunction().getArguments() != null)
                                     ? tc.getFunction().getArguments() : "{}";
-                            sink.next(new StreamEvent.ToolCall(toolName, argsJson, tc.getId()));
+                            long startedAt = System.currentTimeMillis();
+                            sink.next(new StreamEvent.ToolCall(toolName, argsJson, tc.getId(), startedAt));
 
                             ToolResult result = executeToolCall(toolName, argsJson);
+                            long finishedAt = System.currentTimeMillis();
                             sink.next(new StreamEvent.ToolResult(toolName, tc.getId(), result.getContent(),
-                                    result.isSuccess(), result.getDurationMs()));
+                                    result.isSuccess(), result.getDurationMs(), startedAt, finishedAt));
                             working.add(ChatMessage.toolResult(tc.getId(), toolName, result.getContent()));
                         }
                         continue; // 回到 while 头部进行下一轮流式调用
@@ -311,20 +313,28 @@ public class ChatServiceImpl implements ChatService {
         }, FluxSink.OverflowStrategy.BUFFER);
     }
 
-    /** 执行单个工具调用 */
+    /** 执行单个工具调用(外层统一测时,保证 durationMs 始终为真实值) */
     private ToolResult executeToolCall(String toolName, String argsJson) {
+        long start = System.currentTimeMillis();
         Tool tool = toolRegistry.get(toolName);
         if (tool == null) {
-            return ToolResult.error("未知工具: " + toolName);
+            ToolResult r = ToolResult.error("未知工具: " + toolName);
+            r.setDurationMs(System.currentTimeMillis() - start);
+            return r;
         }
         try {
             Map<String, Object> args = StringUtils.hasText(argsJson)
                     ? objectMapper.readValue(argsJson, new TypeReference<Map<String, Object>>() {})
                     : Map.of();
             log.info("调用工具: {} 参数: {}", toolName, argsJson);
-            return tool.execute(args);
+            ToolResult result = tool.execute(args);
+            // 外层统一耗时 = 调用真正总耗时,覆盖工具内部未精确设置的 0ms
+            result.setDurationMs(System.currentTimeMillis() - start);
+            return result;
         } catch (Exception e) {
-            return ToolResult.error("参数解析失败: " + e.getMessage());
+            ToolResult r = ToolResult.error("参数解析失败: " + e.getMessage());
+            r.setDurationMs(System.currentTimeMillis() - start);
+            return r;
         }
     }
 

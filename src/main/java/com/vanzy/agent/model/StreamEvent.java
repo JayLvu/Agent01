@@ -13,11 +13,12 @@ public sealed interface StreamEvent
     /** 普通文本 token */
     record Token(String content) implements StreamEvent {}
 
-    /** LLM 决定调用工具 */
-    record ToolCall(String toolName, String arguments, String callId) implements StreamEvent {}
+    /** LLM 决定调用工具(startedAt: 工具开始执行的毫秒时间戳) */
+    record ToolCall(String toolName, String arguments, String callId, long startedAt) implements StreamEvent {}
 
-    /** 工具执行结果 */
-    record ToolResult(String toolName, String callId, String result, boolean success, long durationMs) implements StreamEvent {}
+    /** 工具执行结果(startedAt: 开始毫秒时间戳, finishedAt: 结束毫秒时间戳) */
+    record ToolResult(String toolName, String callId, String result, boolean success, long durationMs,
+                      long startedAt, long finishedAt) implements StreamEvent {}
 
     /** 错误 */
     record Error(String message) implements StreamEvent {}

@@ -294,7 +294,8 @@ function sendStream(text, atts) {
           store.addToolCall({
             toolName: info.toolName,
             arguments: info.arguments,
-            callId: info.callId
+            callId: info.callId,
+            startedAt: info.startedAt
           })
         },
         onToolResult: (info) => {
@@ -302,7 +303,9 @@ function sendStream(text, atts) {
             callId: info.callId,
             result: info.result,
             success: info.success,
-            durationMs: info.durationMs
+            durationMs: info.durationMs,
+            startedAt: info.startedAt,
+            finishedAt: info.finishedAt
           })
         },
         onDone: () => {

@@ -22,7 +22,13 @@
               </el-icon>
               <span class="tool-name">{{ tc.toolName }}</span>
               <el-tag size="small" :type="toolStatusType(tc)" effect="light">{{ toolStatusText(tc) }}</el-tag>
-              <span v-if="tc.durationMs != null" class="tool-duration">{{ tc.durationMs }}ms</span>
+              <span class="tool-time" v-if="tc.startedAt">
+                <span class="tool-time-label">开始</span>{{ formatTime(tc.startedAt) }}
+              </span>
+              <span class="tool-time" v-if="tc.finishedAt">
+                <span class="tool-time-label">结束</span>{{ formatTime(tc.finishedAt) }}
+              </span>
+              <span class="tool-duration" v-if="tc.durationMs != null">耗时 {{ tc.durationMs }}ms</span>
               <el-icon class="tool-expand-icon">
                 <ArrowUp v-if="isExpanded(tc, i)" />
                 <ArrowDown v-else />
@@ -37,7 +43,12 @@
                 <div class="tool-result-head" :class="{ 'is-error': !tc.success }">
                   {{ tc.success ? '✓ 执行成功' : '✗ 执行失败' }}
                 </div>
-                <div v-if="tc.result" class="tool-result" :class="{ 'is-error': !tc.success }">{{ tc.result }}</div>
+                <div
+                  v-if="tc.result"
+                  class="tool-result tool-result-md"
+                  :class="{ 'is-error': !tc.success }"
+                  v-html="renderToolResult(tc)"
+                ></div>
               </template>
               <div v-else class="tool-running-hint">
                 <el-icon class="is-loading"><Loading /></el-icon> 正在执行…
@@ -221,6 +232,7 @@ const renderedTextContent = computed(() => {
 // 1. 补全 #/-/数字. 后的空格
 // 2. 在同行出现的块级元素(#标题、-列表、```代码围栏)前补换行
 // 3. 代码围栏 ``` 紧跟内容时补换行
+// 4. 表格独立成段, 保证 GFM table 识别
 function preprocessMarkdown(src) {
   if (!src) return ''
   let s = src
@@ -234,10 +246,10 @@ function preprocessMarkdown(src) {
 
   // 4. 同行出现的 ## 标题前补换行 (如 "文本##标题" → "文本\n\n## 标题")
   s = s.replace(/([^\n#])(#{1,6}\s)/g, '$1\n\n$2')
-  // 5. 同行出现的 - 列表项前补换行 (如 "文本-列表" → "文本\n\n- 列表")
-  //    注意: 只匹配 - 后跟空格的情况(已由步骤2补过空格),避免误伤减号
-  s = s.replace(/([^\s\n])(\n?)([-*+]\s)/g, (m, before, nl, list) => {
-    if (nl) return m // 已有换行,不动
+  // 5. 同行出现的 - 列表项前补换行 (如 "文本- 列表" → "文本\n- 列表")
+  //    注意: 列表标记前不能是另一个 -/*/+，避免误伤表格分隔符 :---| 或 ****
+  s = s.replace(/([^\s\n\-*+])(\n?)([-*+]\s)/g, (m, before, nl, list) => {
+    if (nl) return m
     return before + '\n' + list
   })
   // 6. 同行出现的有序列表前补换行 (如 "文本1.列表" → "文本\n1. 列表")
@@ -250,17 +262,63 @@ function preprocessMarkdown(src) {
   s = s.replace(/([^\n`])(```)/g, '$1\n\n$2')
   // 8. 代码围栏 ```language 后紧跟代码内容(同行) → 后面补换行
   s = s.replace(/(```[a-zA-Z0-9+-]*)([^\n])/g, (m, fence, ch) => {
-    if (ch === '`') return m // ```
+    if (ch === '`') return m
     return fence + '\n' + ch
   })
   // 9. 代码内容后紧跟 ``` 结束标记(同行) → 前面补换行
   s = s.replace(/([^\n`])(```)/g, '$1\n$2')
 
-  // 10. --- 分隔线前补换行
-  s = s.replace(/([^\n-])(\n?)(---)/g, (m, before, nl, hr) => {
-    if (nl) return m
-    return before + '\n' + hr
-  })
+  // 10. 真正的水平分割线 ---/*** (整行只有这个, 且不位于表格分隔符) 在前一段紧跟时前补空行
+  s = s.replace(/([^\n\s])(\n)(-{3,}|\*{3,})(?=\n|$)/g, '$1\n\n$2$3')
+  //    注意: 只有当 ---/*** 前面的字符是普通段落字符(不是 |: 冒号/管道 表格分隔)时才补换行
+  s = s.replace(/([^\n-\s*:|])(-{3,}|\*{3,})(?=\n|$)/g, '$1\n\n$2')
+
+  // 11. 表格独立成段: 把字符串按行处理, 表格前/后各补空行, 保证 GFM table 识别
+  //     同时修复"表格内容和前面的文本处在同一行"的情况
+  const lines = s.split('\n')
+  const isTblRow = (ln) => /^\s*\|.*\|\s*$/.test(ln) && (ln.match(/\|/g) || []).length >= 2
+  const isTblSep = (ln) => /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(ln)
+  const isBlank = (ln) => /^\s*$/.test(ln)
+  const isFence = (ln) => /^\s*```/.test(ln)
+  const out = []
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const tblR = isTblRow(line)
+    const tblS = isTblSep(line)
+    if ((tblR || tblS) && out.length > 0) {
+      const prev = out[out.length - 1]
+      if (!isBlank(prev) && !isTblRow(prev) && !isTblSep(prev) && !isFence(prev)) {
+        out.push('')
+      }
+    }
+    // 如果当前行本身"前面有普通文本 + 紧跟一个完整表格行"(同行拼接), 则拆成两行
+    let pushed = false
+    if (!tblR && !tblS) {
+      const m = line.match(/^(.+?[^|\n])(\s*)(\|\s*[^|\n].*\|)\s*$/)
+      if (m && (m[3].match(/\|/g) || []).length >= 2) {
+        const head = m[1]
+        const tblPart = m[3]
+        if (/^\|/.test(tblPart)) {
+          if (head.trim()) out.push(head)
+          // 插入一个空行作为分隔(表格前缀保护)
+          if (out.length > 0 && !isBlank(out[out.length - 1])) out.push('')
+          out.push(tblPart)
+          pushed = true
+        }
+      }
+    }
+    if (!pushed) {
+      // 表格结束后的"正文第一行"如果紧跟表格, 则在正文前插入一个空行, 避免 marked 把后续文字当成表格的一行
+      if (!tblR && !tblS && !isBlank(line) && !isFence(line) && out.length > 0) {
+        const prev = out[out.length - 1]
+        if (isTblRow(prev) || isTblSep(prev)) {
+          out.push('')
+        }
+      }
+      out.push(line)
+    }
+  }
+  s = out.join('\n')
 
   return s
 }
@@ -273,6 +331,17 @@ const renderedContent = computed(() => {
     return escapeHtml(props.message.content).replace(/\r?\n/g, '<br>')
   }
 })
+
+// 工具调用结果: 同样走 markdown 渲染, 支持表格、加粗(消除字面星号)、代码块等
+function renderToolResult(tc) {
+  const src = tc.result
+  if (!src) return ''
+  try {
+    return marked.parse(preprocessMarkdown(src))
+  } catch {
+    return escapeHtml(src).replace(/\r?\n/g, '<br>')
+  }
+}
 
 /* =======================
  * 全局: 代码复制(使用onclick直接绑,避免重复监听)
@@ -320,7 +389,7 @@ function toolIcon(name) {
 }
 
 // 折叠状态: 每个工具调用独立控制
-// 默认: 执行中(pending)展开, 完成后收起; 用户点击后记住手动偏好
+// 默认: 执行中(pending)展开让用户看到进度; 完成后默认收起,减少干扰,点击再展开查看详情
 const expandedMap = reactive({})
 
 function toolKey(tc, i) {
@@ -330,12 +399,21 @@ function toolKey(tc, i) {
 function isExpanded(tc, i) {
   const k = toolKey(tc, i)
   if (k in expandedMap) return expandedMap[k]
+  // 完成后默认收起, 仅 pending 展开
   return !!tc.pending
 }
 
 function toggleTool(tc, i) {
   const k = toolKey(tc, i)
   expandedMap[k] = !isExpanded(tc, i)
+}
+
+// 毫秒时间戳 -> HH:mm:ss.mmm
+function formatTime(ts) {
+  if (ts == null) return ''
+  const d = new Date(ts)
+  const pad = (n, w = 2) => String(n).padStart(w, '0')
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`
 }
 
 function toolStatusType(tc) {
@@ -507,14 +585,31 @@ function toolStatusText(tc) {
       color: #303133;
     }
 
-    .tool-duration {
-      margin-left: auto;
+    .tool-time {
       color: #909399;
       font-size: 11px;
+      font-family: 'Consolas', 'Menlo', monospace;
+      white-space: nowrap;
+
+      .tool-time-label {
+        color: #c0c4cc;
+        margin-right: 2px;
+      }
+    }
+
+    .tool-duration {
+      margin-left: auto;
+      color: #606266;
+      font-size: 11px;
+      font-weight: 600;
+      background: #ecf5ff;
+      color: #409eff;
+      padding: 0 6px;
+      border-radius: 8px;
     }
 
     .tool-expand-icon {
-      margin-left: 6px;
+      margin-left: 4px;
       color: #c0c4cc;
       font-size: 12px;
       transition: transform 0.2s;
@@ -572,12 +667,77 @@ function toolStatusText(tc) {
     border-radius: 3px;
     word-break: break-all;
     white-space: pre-wrap;
-    max-height: 160px;
+    max-height: 320px;
     overflow-y: auto;
 
     &.is-error {
       color: #f56c6c;
       background: #fef0f0;
+    }
+  }
+
+  // 工具卡片: 走 markdown 渲染后的样式, 与页面 markdown-body 保持一致但更紧凑
+  .tool-result-md {
+    white-space: normal;
+    color: inherit;
+    line-height: 1.5;
+
+    :deep(p) { margin: 0 0 4px; &:last-child { margin-bottom: 0; } }
+    :deep(strong) { font-weight: 600; color: inherit; }
+    :deep(em) { font-style: italic; }
+    :deep(code) {
+      background: rgba(255,255,255,0.6);
+      color: inherit;
+      padding: 0 4px;
+      border-radius: 2px;
+      font-family: 'Consolas', monospace;
+    }
+    :deep(pre) {
+      background: rgba(0,0,0,0.04);
+      padding: 6px 8px;
+      border-radius: 3px;
+      overflow-x: auto;
+      margin: 4px 0;
+      code { background: transparent; padding: 0; }
+    }
+    :deep(table) {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 4px 0;
+      font-size: 12px;
+      color: #303133;
+      background: #fff;
+      border-radius: 3px;
+      overflow: hidden;
+      display: block;
+      overflow-x: auto;
+
+      th, td {
+        border: 1px solid #ebeef5;
+        padding: 4px 8px;
+        text-align: left;
+        vertical-align: top;
+        white-space: nowrap;
+      }
+      th {
+        background: #f5f7fa;
+        font-weight: 600;
+        color: #606266;
+      }
+      tr:nth-child(even) td {
+        background: #fafbfc;
+      }
+    }
+    :deep(ul), :deep(ol) {
+      padding-left: 1.4em;
+      margin: 2px 0;
+    }
+    :deep(blockquote) {
+      margin: 4px 0;
+      padding: 2px 8px;
+      border-left: 3px solid #dcdfe6;
+      color: #606266;
+      background: rgba(255,255,255,0.4);
     }
   }
 
