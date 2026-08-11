@@ -1,9 +1,11 @@
 package com.vanzy.agent.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.vanzy.agent.model.AttachmentFile;
 import com.vanzy.agent.model.ChatRequest;
 import com.vanzy.agent.model.ChatResponse;
 import com.vanzy.agent.model.StreamEvent;
+import com.vanzy.agent.service.AttachmentParser;
 import com.vanzy.agent.service.ChatService;
 import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
@@ -13,9 +15,10 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
-import reactor.core.publisher.Flux;
 
 /**
  * 对话 HTTP API
@@ -34,10 +37,38 @@ public class ChatController {
 
     private final ChatService chatService;
     private final ObjectMapper objectMapper;
+    private final AttachmentParser attachmentParser;
 
-    public ChatController(ChatService chatService, ObjectMapper objectMapper) {
+    public ChatController(ChatService chatService, ObjectMapper objectMapper, AttachmentParser attachmentParser) {
         this.chatService = chatService;
         this.objectMapper = objectMapper;
+        this.attachmentParser = attachmentParser;
+    }
+
+    /**
+     * 附件上传: 后端解析 Word/Excel/PDF/PPT/TXT/MD 等文件,提取纯文本返回给前端
+     * 前端拿到文本后,作为 AttachmentFile 放入对话请求的 attachments 字段
+     */
+    @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public AttachmentFile upload(@RequestParam("file") MultipartFile file) {
+        if (file == null || file.isEmpty()) {
+            throw new IllegalArgumentException("上传文件不能为空");
+        }
+        String fileName = file.getOriginalFilename();
+        log.info("收到附件上传: fileName={}, size={}", fileName, file.getSize());
+        try {
+            String content = attachmentParser.parse(fileName, file.getBytes());
+            log.info("附件解析完成: fileName={}, 提取字符数={}", fileName, content.length());
+            return AttachmentFile.builder()
+                    .fileName(fileName)
+                    .fileType(AttachmentParser.detectExt(fileName))
+                    .fileSize(file.getSize())
+                    .content(content)
+                    .build();
+        } catch (Exception e) {
+            log.error("附件解析失败: fileName={}", fileName, e);
+            throw new IllegalArgumentException("附件解析失败: " + e.getMessage());
+        }
     }
 
     /**

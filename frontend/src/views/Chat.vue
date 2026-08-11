@@ -55,12 +55,12 @@
           <el-upload
             :show-file-list="false"
             multiple
-            accept=".md,.markdown,.txt,.csv,.json,.xml,.yaml,.yml,.py,.java,.js,.html,.vue,.log,.pdf,.docx"
+            accept=".txt,.md,.markdown,.csv,.json,.xml,.yaml,.yml,.pdf,.docx,.xlsx,.pptx,.py,.java,.js,.html,.vue,.log"
             :before-upload="beforeAttachmentUpload"
             class="attach-uploader"
           >
-            <el-tooltip content="上传附件(文件内容将拼入消息)" placement="top">
-              <el-button :icon="Paperclip" size="small" circle />
+            <el-tooltip content="上传附件(支持 Word/Excel/PDF/PPT/TXT/MD,后端解析文本后拼入消息)" placement="top">
+              <el-button :icon="Paperclip" size="small" circle :loading="uploading" />
             </el-tooltip>
           </el-upload>
 
@@ -136,6 +136,7 @@ const store = useChatStore()
 
 const inputText = ref('')
 const loading = ref(false)
+const uploading = ref(false)
 const streamMode = ref(true)
 const enableRag = ref(true)
 const enableTools = ref(true)
@@ -163,40 +164,24 @@ function handleEnter() {
   if (!loading.value) sendMessage()
 }
 
-/** 上传附件前: 读取文件文本内容(本地处理,不上传到服务器) */
+/** 上传附件: 发送到后端解析 Word/Excel/PDF/PPT 等格式,提取文本后存入附件列表 */
 async function beforeAttachmentUpload(file) {
+  uploading.value = true
   try {
-    const content = await readFileAsText(file)
+    const result = await chatApi.upload(file)
     attachments.value.push({
-      fileName: file.name,
-      fileType: file.type || detectType(file.name),
-      fileSize: file.size,
-      content
+      fileName: result.fileName,
+      fileType: result.fileType,
+      fileSize: result.fileSize,
+      content: result.content
     })
-    ElMessage.success(`已附加文件: ${file.name}`)
+    ElMessage.success(`已附加文件: ${file.name} (${result.content.length} 字符)`)
   } catch (e) {
-    ElMessage.error(`读取文件 ${file.name} 失败: ${e.message || e}`)
+    ElMessage.error(`解析文件 ${file.name} 失败: ${e.response?.data?.message || e.message || e}`)
+  } finally {
+    uploading.value = false
   }
   return false // 阻止 el-upload 默认上传
-}
-
-/** 读取文件为文本；对 pdf/docx 直接提示不支持, 避免引入解析依赖 */
-function readFileAsText(file) {
-  const binExt = /\.(pdf|docx?|xlsx?|pptx?|png|jpe?g|gif|zip|rar|7z|exe)$/i
-  if (binExt.test(file.name)) {
-    return Promise.reject(new Error('暂不支持二进制文件 (pdf/docx/图片等) 作为附件，请先转换为 txt/md 再上传'))
-  }
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(reader.result)
-    reader.onerror = () => reject(new Error('读取失败'))
-    reader.readAsText(file, 'utf-8')
-  })
-}
-
-function detectType(name) {
-  const m = name.match(/\.(\w+)$/)
-  return m ? m[1].toLowerCase() : ''
 }
 
 function removeAttachment(idx) {

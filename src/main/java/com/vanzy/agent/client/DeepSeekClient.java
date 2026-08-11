@@ -111,13 +111,23 @@ public class DeepSeekClient {
                 .bodyValue(request)
                 .retrieve()
                 .bodyToFlux(new ParameterizedTypeReference<ServerSentEvent<String>>() {})
-                .map(ServerSentEvent::data)
-                .filter(data -> data != null && !"[DONE]".equals(data.trim()))
+                // 第 1 步: 从 SSE 帧中提取 data 字段,空 data / [DONE] 帧(心跳/取消信号后的残余帧)在此处直接丢弃
+                // 使用 .handle 而不是 .map + .filter, 是因为 Reactor 禁止 .map 的 mapper 返回 null
+                .<String>handle((sse, sink) -> {
+                    String data = sse.data();
+                    if (data == null) return;
+                    String trimmed = data.trim();
+                    if (trimmed.isEmpty() || "[DONE]".equals(trimmed)) return;
+                    sink.next(data);
+                })
+                // 第 2 步: JSON 解析成 DeepSeekStreamChunk,解析失败的脏数据(或 comment/心跳行)直接跳过
                 .<DeepSeekStreamChunk>handle((data, sink) -> {
                     try {
                         sink.next(objectMapper.readValue(data, DeepSeekStreamChunk.class));
                     } catch (Exception e) {
-                        log.warn("解析 SSE 数据块失败,跳过: data={}", data);
+                        // 某些上游会插入 comment 行或 SSE 心跳,解析失败是预料之内,仅 debug 级即可
+                        log.debug("解析 SSE 数据块失败,跳过该行(可能是 comment/心跳帧): dataPrefix={}",
+                                data.length() > 120 ? data.substring(0, 120) + "..." : data);
                     }
                 })
                 .doOnError(e -> log.error("DeepSeek 流式调用失败", e))
