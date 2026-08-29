@@ -40,4 +40,13 @@ public class ChatRequest {
 
     /** 可选: 随消息一起发送的附件文件(前端已读取内容,后端自动拼接到用户消息前) */
     private List<AttachmentFile> attachments;
+
+    /** 可选: 显式指定模型名(多模型路由) */
+    private String model;
+
+    /** 可选: 是否使用深度推理模型(多模型路由) */
+    private Boolean reasoning;
+
+    /** 可选: 本次请求的唯一 ID(用于停止生成/取消) */
+    private String requestId;
 }

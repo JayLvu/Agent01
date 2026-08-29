@@ -81,6 +81,32 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  /** 附加 token/成本统计到最后一条 assistant 消息 */
+  function setUsage(usage) {
+    for (let i = messages.value.length - 1; i >= 0; i--) {
+      if (messages.value[i].role === 'assistant') {
+        messages.value[i].usage = usage
+        messages.value[i].model = usage?.model
+        messages.value = [...messages.value]
+        break
+      }
+    }
+  }
+
+  /** 标记最后一条 assistant 消息为已取消(无内容时补提示) */
+  function markCancelled(reason) {
+    for (let i = messages.value.length - 1; i >= 0; i--) {
+      const m = messages.value[i]
+      if (m.role === 'assistant') {
+        m.cancelled = true
+        m.streaming = false
+        if (!m.content) m.content = `⏹️ 已停止生成${reason ? '：' + reason : ''}`
+        messages.value = [...messages.value]
+        break
+      }
+    }
+  }
+
   function clearMessages() {
     messages.value = []
   }
@@ -100,6 +126,8 @@ export const useChatStore = defineStore('chat', () => {
     finishStreaming,
     addToolCall,
     setToolResult,
+    setUsage,
+    markCancelled,
     clearMessages,
     clearSession
   }

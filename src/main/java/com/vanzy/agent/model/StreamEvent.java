@@ -8,7 +8,8 @@ package com.vanzy.agent.model;
  * @author VanzyLiu
  */
 public sealed interface StreamEvent
-        permits StreamEvent.Token, StreamEvent.ToolCall, StreamEvent.ToolResult, StreamEvent.Error {
+        permits StreamEvent.Token, StreamEvent.ToolCall, StreamEvent.ToolResult, StreamEvent.Error,
+        StreamEvent.Usage, StreamEvent.Cancelled {
 
     /** 普通文本 token */
     record Token(String content) implements StreamEvent {}
@@ -19,6 +20,13 @@ public sealed interface StreamEvent
     /** 工具执行结果(startedAt: 开始毫秒时间戳, finishedAt: 结束毫秒时间戳) */
     record ToolResult(String toolName, String callId, String result, boolean success, long durationMs,
                       long startedAt, long finishedAt) implements StreamEvent {}
+
+    /** Token/成本统计(对话结束时推送一次) */
+    record Usage(String model, int promptTokens, int completionTokens, int totalTokens, double cost,
+                 String currency) implements StreamEvent {}
+
+    /** 用户主动取消 */
+    record Cancelled(String reason) implements StreamEvent {}
 
     /** 错误 */
     record Error(String message) implements StreamEvent {}

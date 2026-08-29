@@ -5,10 +5,12 @@
  *
  * 用法:
  *   streamChat(body, {
- *     onSession(sessionId) { ... },        // 首个事件,携带 sessionId
+ *     onSession({sessionId, requestId}) { ... },  // 首个事件,携带 sessionId + requestId
  *     onToken(token) { ... },              // 逐 token 回调
  *     onToolCall(info) { ... },            // LLM 决定调用工具 {toolName,arguments,callId}
  *     onToolResult(info) { ... },          // 工具执行结果 {toolName,result,success,durationMs}
+ *     onUsage(info) { ... },               // token/成本统计 {model,promptTokens,...,cost}
+ *     onCancelled(reason) { ... },         // 用户停止生成
  *     onDone() { ... },                    // 流结束
  *     onError(err) { ... }                 // 异常
  *   })
@@ -17,7 +19,7 @@
  * @param {Object} handlers 回调
  * @returns {AbortController} 可调用 .abort() 中断
  */
-export function streamChat(body, { onSession, onToken, onToolCall, onToolResult, onDone, onError } = {}) {
+export function streamChat(body, { onSession, onToken, onToolCall, onToolResult, onUsage, onCancelled, onDone, onError } = {}) {
   const controller = new AbortController()
 
   fetch('/api/v1/chat/stream', {
@@ -67,13 +69,17 @@ export function streamChat(body, { onSession, onToken, onToolCall, onToolResult,
           // 多个 data: 行按 SSE 规范用 \n 拼接; 单行 data 直接取值
           const data = dataParts.join('\n')
           if (eventType === 'session' && data) {
-            onSession && onSession(data)
+            onSession && onSession(safeParse(data))
           } else if (eventType === 'token' && data) {
             onToken && onToken(data)
           } else if (eventType === 'tool_call' && data) {
             onToolCall && onToolCall(safeParse(data))
           } else if (eventType === 'tool_result' && data) {
             onToolResult && onToolResult(safeParse(data))
+          } else if (eventType === 'usage' && data) {
+            onUsage && onUsage(safeParse(data))
+          } else if (eventType === 'cancelled' && data) {
+            onCancelled && onCancelled(data)
           } else if (eventType === 'done') {
             onDone && onDone()
             return

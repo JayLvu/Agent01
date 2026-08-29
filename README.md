@@ -1,6 +1,6 @@
 # Agent01 · AI 对话 Agent
 
-> 基于 Spring Boot 3 + DeepSeek 大模型 + Vue 3 的私有化 AI 对话 Agent，内置 **LLM 工具调用（Function Calling）框架**、**流式响应（SSE）**、**对话记忆（Redis）**、**RAG 文档检索（向量搜索）**、**Skill 知识注入**、**对话附件**六大核心能力。
+> 基于 Spring Boot 3 + DeepSeek 大模型 + Vue 3 的私有化 AI 对话 Agent，内置 **LLM 工具调用（Function Calling）框架**、**流式响应（SSE）**、**对话记忆（Redis）**、**RAG 文档检索（向量搜索）**、**Skill 知识注入**、**对话附件**六大核心能力；并在此基础上扩展了 **多模型路由**、**并行工具调用**、**停止生成（真正取消）**、**记忆摘要压缩**、**联网搜索 / HTTP 请求 / 浏览器自动化 / 定时任务**工具、**Token 成本统计** 与 **审计日志**。
 
 ***
 
@@ -26,6 +26,10 @@ LLM 可以自主决策、编排、链式调用以下工具，循环执行直到�
 | `list_files`     | FileListTool   | 列出 workspace 沙箱内的文件与目录（支持递归）                           |
 | `read_file`      | FileReadTool   | 读取沙箱内的文本文件（txt/md/json/csv/yaml/xml/py/java/js/html 等） |
 | `write_file`     | FileWriteTool  | 在沙箱内创建/覆盖/追加文本文件，自动创建父目录                               |
+| `web_search`     | WebSearchTool  | 联网搜索实时信息（DuckDuckGo 免费 / Serper 需 Key）                    |
+| `http_request`   | HttpRequestTool| 调用外部 HTTP API（GET/POST/PUT/DELETE，自定义 header/body）         |
+| `browse_url`     | BrowserTool    | 抓取网页并提取标题、描述与正文（jsoup 实现）                              |
+| `schedule_task`  | ScheduleTool   | 创建延迟执行的定时任务/提醒，由调度器到期执行                              |
 
 **工具调用安全机制**：
 
@@ -57,6 +61,26 @@ LLM 可以自主决策、编排、链式调用以下工具，循环执行直到�
 - **本地读取**：前端用 `FileReader.readAsText` 在浏览器本地读取文件内容，不上传二进制文件到服务器
 - **内容注入**：后端把附件内容以 `附件[N]: 文件名 + 内容块 + 用户问题` 格式拼到用户消息前，超 200KB 自动截断
 - **消息气泡展示**：用户消息气泡中显示 `[附加 N 个文件: a.md, b.csv]`，便于确认上下文
+
+### 🚀 进阶能力（2026 增强）
+
+除上述六大核心能力外，本版本还内置以下工程化能力：
+
+| 能力 | 说明 | 相关配置 |
+| --- | --- | --- |
+| **多模型路由** | 按请求显式指定 / 关键词 / reasoning 标记自动选择模型（如普通问题走 chat、推理问题走 reasoner） | `agent.router.*` |
+| **流式工具调用** | 工具调用模式下 LLM 仍逐 token 流式输出，参数跨 chunk 拼接 | 内置 |
+| **并行工具调用** | 一轮中多个无依赖 tool_calls 并发执行，结果按序回传 | `agent.tools.parallel` |
+| **停止生成（真正取消）** | 前端停止时经 `requestId` 通知后端，`takeUntilOther` 真正中断底层 LLM 请求 | `POST /chat/cancel/{requestId}` |
+| **记忆摘要压缩** | 历史消息数超阈值时自动把更早对话压成摘要，避免上下文膨胀 | `agent.memory.summarize-*` |
+| **Token / 成本统计** | 记录每次调用 token 与成本（按配置单价），提供汇总与明细 | `agent.cost.*`、`/stats/*` |
+| **审计日志** | 记录对话、工具调用、取消、定时任务等关键操作，落库可查 | `/audit/logs` |
+| **联网搜索工具** | `web_search`：DuckDuckGo（免费）或 Serper（需 Key） | `agent.tools.search.*` |
+| **HTTP 请求工具** | `http_request`：调用任意外部 REST API | 内置 |
+| **浏览器自动化** | `browse_url`：抓取网页标题/描述/正文（jsoup，轻量） | `agent.tools.browser.*` |
+| **定时任务工具** | `schedule_task`：创建延迟执行任务，调度器到期执行 | `agent.tools.scheduler.*` |
+
+> 说明：工具调用循环已加 `agent.tools.max-iterations` 上限，防止模型陷入死循环；`browse_url` 为轻量网页抓取，如需点击/填表/截图等完整浏览器自动化，可基于 `Tool` 接口替换为 Playwright/Selenium 实现。
 
 ### 🎨 前端界面（Vue 3 + Element Plus）
 
@@ -119,7 +143,13 @@ Agent01/
 │   │   │   ├── java/com/vanzy/agent/
 │   │   │   │   ├── AgentApplication.java              # 启动类
 │   │   │   │   ├── client/
-│   │   │   │   │   └── DeepSeekClient.java            # DeepSeek HTTP 封装(同步/流式 + tools schema)
+│   │   │   │   │   └── DeepSeekClient.java            # DeepSeek HTTP 封装(同步/流式 + 多模型 + usage)
+│   │   │   │   ├── routing/
+│   │   │   │   │   └── ModelRouter.java               # 多模型路由(关键词/显式/reasoning)
+│   │   │   │   ├── persistence/                       # JPA 实体 + 仓库(审计/统计/定时任务)
+│   │   │   │   │   ├── AuditLog.java / AuditLogRepository.java
+│   │   │   │   │   ├── TokenUsageRecord.java / TokenUsageRepository.java
+│   │   │   │   │   └── ScheduledTask.java / ScheduledTaskRepository.java
 │   │   │   │   ├── config/
 │   │   │   │   │   ├── AgentProperties.java           # agent.* 配置绑定(记忆/RAG/工具/文件沙箱/Skill)
 │   │   │   │   │   ├── DeepSeekProperties.java        # deepseek.* 配置绑定
@@ -127,9 +157,12 @@ Agent01/
 │   │   │   │   │   ├── WebClientConfig.java           # WebClient 超时+连接池
 │   │   │   │   │   └── WebMvcConfig.java              # 全局 CORS + UTF-8 响应编码
 │   │   │   │   ├── controller/
-│   │   │   │   │   ├── ChatController.java            # /chat  同步 /chat/stream SSE /clear
+│   │   │   │   │   ├── ChatController.java            # /chat 同步 /chat/stream SSE /cancel /clear
 │   │   │   │   │   ├── DocumentController.java        # /documents 上传/列表/删除
 │   │   │   │   │   ├── SkillController.java           # /skills 上传/列表/切换/删除/读取内容
+│   │   │   │   │   ├── StatsController.java           # /stats token/成本统计
+│   │   │   │   │   ├── AuditController.java           # /audit 审计日志
+│   │   │   │   │   ├── ScheduleController.java        # /schedules 定时任务管理
 │   │   │   │   │   └── HealthController.java          # /health 健康检查
 │   │   │   │   ├── exception/                         # 自定义异常 + 全局处理
 │   │   │   │   ├── model/
@@ -147,8 +180,13 @@ Agent01/
 │   │   │   │   │   ├── VectorStore.java / impl Redis  # 向量增删查
 │   │   │   │   │   └── TextVectorizer.java            # 文本向量化(n-gram)
 │   │   │   │   ├── service/
-│   │   │   │   │   ├── ChatService.java / impl        # 核心对话(同步+流式+工具循环+RAG注入+Skill注入+附件处理)
-│   │   │   │   │   └── MemoryService.java / Redis     # 会话记忆存取
+│   │   │   │   │   ├── ChatService.java / impl        # 核心对话(同步+流式+工具循环+路由+摘要+统计+审计)
+│   │   │   │   │   ├── MemoryService.java / Redis     # 会话记忆存取 + 摘要压缩
+│   │   │   │   │   ├── AuditLogService.java           # 审计日志
+│   │   │   │   │   ├── TokenUsageService.java         # Token/成本统计
+│   │   │   │   │   ├── CancellationRegistry.java      # 取消信号注册中心
+│   │   │   │   │   ├── ScheduledTaskService.java      # 定时任务 CRUD
+│   │   │   │   │   └── ScheduledTaskRunner.java       # 定时任务调度执行
 │   │   │   │   ├── skill/
 │   │   │   │   │   ├── SkillService.java              # Skill 服务接口
 │   │   │   │   │   └── impl/SkillServiceImpl.java     # 上传/列表/启用禁用/删除/读取/构建Prompt
@@ -156,7 +194,7 @@ Agent01/
 │   │   │   │       ├── Tool.java                      # 工具统一接口
 │   │   │   │       ├── ToolRegistry.java              # 自动注册 + JSON Schema 生成
 │   │   │   │       ├── ToolResult.java                # 工具执行结果(success/content/duration/error/callId)
-│   │   │   │       └── impl/                          # 6 个内置工具实现
+│   │   │   │       └── impl/                          # 10 个内置工具实现(含搜索/HTTP/浏览/定时)
 │   │   │   └── resources/
 │   │   │       ├── application.yml                    # 主配置(含 UTF-8 编码 + Skill 配置)
 │   │   │       └── application-dev.yml                # 开发环境覆盖
@@ -168,9 +206,12 @@ Agent01/
 │   ├── src/
 │   │   ├── api/
 │   │   │   ├── request.js                             # Axios 实例(带拦截器)
-│   │   │   ├── chat.js                                # 对话接口封装
+│   │   │   ├── chat.js                                # 对话接口封装(含取消)
 │   │   │   ├── document.js                            # 文档接口封装
-│   │   │   └── skill.js                               # Skill 接口封装
+│   │   │   ├── skill.js                               # Skill 接口封装
+│   │   │   ├── schedule.js                            # 定时任务接口封装
+│   │   │   ├── stats.js                               # 统计接口封装
+│   │   │   └── audit.js                               # 审计接口封装
 │   │   ├── assets/styles/global.scss
 │   │   ├── components/
 │   │   │   ├── Layout.vue                             # 左侧菜单 + 头部 + 主区域 (<script setup>)
@@ -179,9 +220,11 @@ Agent01/
 │   │   ├── store/index.js                             # Pinia 全局状态(消息/会话)
 │   │   ├── utils/sse.js                               # SSE EventSource 封装(Token/工具事件解析)
 │   │   ├── views/
-│   │   │   ├── Chat.vue                               # 对话主页: 输入框 + 附件上传 + 消息列表 + 流式渲染
+│   │   │   ├── Chat.vue                               # 对话主页: 输入框 + 附件上传 + 消息列表 + 流式渲染 + 停止
 │   │   │   ├── Documents.vue                          # 文档上传/列表/删除
 │   │   │   ├── Skills.vue                             # Skill 上传/列表/启用禁用/查看/删除
+│   │   │   ├── Tasks.vue                              # 定时任务列表/新建/取消
+│   │   │   ├── Stats.vue                              # Token/成本统计 + 审计日志
 │   │   │   └── About.vue
 │   │   ├── App.vue
 │   │   └── main.js                                    # createApp + Element Plus 全局注册
@@ -323,18 +366,48 @@ Content-Type: application/json
 Accept: text/event-stream
 
 # 请求体同上; 事件类型:
-#   event: sessionId   data: {sessionId}
-#   event: tool_call   data: {name, argsJson, callId}
-#   event: tool_result data: {name, callId, content, success, durationMs}
-#   event: token       data: "增量文本"
-#   event: done        data: {}
-#   event: error       data: {message}
+#   event: session    data: {sessionId, requestId}
+#   event: tool_call  data: {toolName, arguments, callId, startedAt}
+#   event: tool_result data: {toolName, callId, result, success, durationMs, startedAt, finishedAt}
+#   event: token      data: "增量文本"
+#   event: usage      data: {model, promptTokens, completionTokens, totalTokens, cost, currency}
+#   event: cancelled  data: "取消原因"
+#   event: done       data: {}
+#   event: error      data: {message}
 ```
 
 ### 清空会话记忆
 
 ```http
 DELETE /chat/{sessionId}
+```
+
+### 停止生成（真正取消）
+
+```http
+POST /chat/cancel/{requestId}      # 中断进行中的流式请求(关闭底层 LLM 连接)
+```
+
+### 定时任务
+
+```http
+GET    /schedules                  # 列表
+POST   /schedules                  # 手动创建 {name,message,delaySeconds}
+DELETE /schedules/{id}             # 取消
+```
+
+### Token/成本统计
+
+```http
+GET /stats/overview                # {summary:{...}, recent:[...]}
+GET /stats/summary                 # 汇总
+GET /stats/usage                   # 明细
+```
+
+### 审计日志
+
+```http
+GET /audit/logs?action=TOOL_CALL&sessionId=xxx   # 按类型/会话过滤
 ```
 
 ### 文档管理
@@ -378,6 +451,13 @@ GET /health   → {"status":"UP","timestamp":"2026-08-08T00:00:00"}
 | `REDIS_HOST` / `PORT` / `PASSWORD` / `DATABASE` | localhost/6379/空/0         | Redis 连接参数                                  |
 | `agent.memory.max-history`                      | 20                         | 保留最近 N 轮对话                                  |
 | `agent.memory.ttl-hours`                        | 24                         | 会话在 Redis 的 TTL                             |
+| `agent.memory.summarize-enabled`                | true                       | 是否启用记忆摘要压缩                                  |
+| `agent.memory.summarize-threshold`              | 16                         | 历史消息数超过该值触发摘要                                |
+| `agent.memory.summarize-keep-recent`            | 8                          | 摘要后保留最近 N 条消息                                 |
+| `agent.router.enabled` / `default-model` / `reasoning-model` | true / 空 / 空 | 多模型路由开关与默认/推理模型                              |
+| `agent.router.reasoning-keywords`               | 分析,推理,为什么,…            | 命中关键词路由到推理模型                                 |
+| `agent.cost.enabled` / `currency`               | true / CNY                 | 是否启用成本统计与货币                                  |
+| `agent.cost.prompt-price` / `completion-price`  | 2.0 / 8.0                  | 每百万 token 价格(元)                               |
 | `agent.rag.enabled`                             | true                       | 是否启用 RAG                                    |
 | `DOCS_UPLOAD_DIR`                               | `./data/docs`              | 文档落盘目录                                      |
 | `DOCS_CHUNK_SIZE` / `OVERLAP`                   | 500 / 100                  | 文档分块                                        |
@@ -386,6 +466,12 @@ GET /health   → {"status":"UP","timestamp":"2026-08-08T00:00:00"}
 | `agent.tools.file.max-write-bytes`              | 512000 (500KB)             | 写上限                                         |
 | `agent.skill.enabled`                           | `true`                     | 是否启用 Skill 注入                                |
 | `agent.skill.dir`                               | `./data/skills`            | Skill 文件存储目录                                 |
+| `agent.tools.max-iterations`                    | 8                          | 工具调用最大循环次数                                   |
+| `agent.tools.parallel`                          | true                       | 是否并行执行无依赖工具                                  |
+| `agent.tools.search.enabled` / `provider` / `api-key` | true / duckduckgo / 空 | 联网搜索开关、provider、Serper Key                     |
+| `agent.tools.browser.enabled`                   | true                       | 浏览器自动化(browse_url)开关                          |
+| `agent.tools.scheduler.enabled` / `tick-ms`     | true / 60000               | 定时任务开关与调度轮询间隔                                |
+| `H2_PASSWORD`                                   | 空                          | H2 数据库密码(审计/统计/定时任务持久化)                      |
 
 ***
 

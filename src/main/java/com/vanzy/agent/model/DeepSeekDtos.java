@@ -29,6 +29,9 @@ public class DeepSeekDtos {
         /** 工具选择策略: "auto" / "none" / {"type":"function","function":{"name":..}} */
         @JsonProperty("tool_choice")
         private Object toolChoice;
+        /** 流式时返回 usage(OpenAI/DeepSeek 需 include_usage=true) */
+        @JsonProperty("stream_options")
+        private Map<String, Object> streamOptions;
     }
 
     /** DeepSeek 同步响应 */
@@ -68,6 +71,8 @@ public class DeepSeekDtos {
         private String id;
         private String model;
         private List<Choice> choices;
+        /** 流式最后一个 chunk 可能携带 usage(需 stream_options.include_usage=true) */
+        private DeepSeekResponse.Usage usage;
 
         @Data
         @NoArgsConstructor

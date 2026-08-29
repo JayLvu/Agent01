@@ -20,6 +20,7 @@
                 <CircleCheck v-else-if="tc.success" />
                 <CircleClose v-else />
               </el-icon>
+              <el-icon class="tool-kind-icon"><component :is="toolIcon(tc.toolName)" /></el-icon>
               <span class="tool-name">{{ tc.toolName }}</span>
               <el-tag size="small" :type="toolStatusType(tc)" effect="light">{{ toolStatusText(tc) }}</el-tag>
               <span class="tool-time" v-if="tc.startedAt">
@@ -68,6 +69,12 @@
         ></div>
         <!-- 用户消息: 纯文本, 保留换行 + 路径高亮 -->
         <div v-else-if="message.content" class="text-content chat-text" v-html="renderedTextContent"></div>
+        <!-- Token/成本统计页脚 -->
+        <div v-if="message.role === 'assistant' && message.usage" class="usage-footer">
+          <span v-if="message.usage.model || message.model" class="usage-model">模型 {{ message.usage.model || message.model }}</span>
+          <span v-if="message.usage.totalTokens" class="usage-item">Tokens {{ message.usage.totalTokens }}</span>
+          <span v-if="message.usage.cost != null" class="usage-item">成本 {{ formatCost(message.usage) }}</span>
+        </div>
         <span v-if="message.streaming && message.role === 'assistant'" class="cursor">|</span>
       </div>
     </div>
@@ -383,9 +390,19 @@ function toolIcon(name) {
     calculate: 'Cpu',
     list_files: 'FolderOpened',
     read_file: 'Document',
-    write_file: 'EditPen'
+    write_file: 'EditPen',
+    web_search: 'Search',
+    http_request: 'Connection',
+    browse_url: 'View',
+    schedule_task: 'AlarmClock'
   }
   return map[name] || 'Tools'
+}
+
+function formatCost(usage) {
+  if (!usage) return ''
+  if (usage.cost == null) return ''
+  return usage.cost.toFixed(6) + ' ' + (usage.currency || 'CNY')
 }
 
 // 折叠状态: 每个工具调用独立控制
@@ -757,5 +774,31 @@ function toolStatusText(tc) {
 @keyframes tool-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
+}
+
+.tool-kind-icon {
+  color: #909399;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.usage-footer {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #a8abb2;
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  border-top: 1px dashed #ebeef5;
+  padding-top: 6px;
+
+  .usage-model {
+    font-weight: 600;
+    color: #909399;
+  }
+
+  .usage-item {
+    font-family: 'Consolas', 'Menlo', monospace;
+  }
 }
 </style>

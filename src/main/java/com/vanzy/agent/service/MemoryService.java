@@ -38,6 +38,21 @@ public interface MemoryService {
     void clearHistory(String sessionId);
 
     /**
+     * 保存会话的压缩摘要(记忆摘要压缩)
+     */
+    void saveSummary(String sessionId, String summary);
+
+    /**
+     * 读取会话的压缩摘要
+     */
+    String getSummary(String sessionId);
+
+    /**
+     * 裁剪历史,只保留最近 keepRecent 条消息
+     */
+    void trimHistory(String sessionId, int keepRecent);
+
+    /**
      * 创建新会话 ID
      *
      * @return 新的会话 ID

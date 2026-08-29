@@ -141,6 +141,7 @@ const streamMode = ref(true)
 const enableRag = ref(true)
 const enableTools = ref(true)
 const abortController = ref(null)
+const currentRequestId = ref(null)
 const messageList = ref(null)
 
 /** 附件列表: [{fileName, fileType, fileSize, content}] */
@@ -257,6 +258,12 @@ async function sendSync(text, atts) {
 /** 流式对话(SSE) */
 function sendStream(text, atts) {
   return new Promise((resolve, reject) => {
+    // 生成 requestId,服务端据此支持"真正取消"
+    const requestId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : ('req-' + Date.now() + '-' + Math.random().toString(36).slice(2))
+    currentRequestId.value = requestId
+
     abortController.value = streamChat(
       {
         sessionId: store.sessionId || undefined,
@@ -264,13 +271,15 @@ function sendStream(text, atts) {
         enableRag: enableRag.value,
         enableTools: enableTools.value,
         stream: true,
+        requestId,
         attachments: atts.length ? atts : undefined
       },
       {
-        onSession: (sessionId) => {
+        onSession: ({ sessionId, requestId: rid }) => {
           if (sessionId && sessionId !== store.sessionId) {
             store.setSession(sessionId)
           }
+          if (rid) currentRequestId.value = rid
         },
         onToken: (token) => {
           store.appendToLast('assistant', token)
@@ -293,6 +302,12 @@ function sendStream(text, atts) {
             finishedAt: info.finishedAt
           })
         },
+        onUsage: (usage) => {
+          store.setUsage(usage)
+        },
+        onCancelled: (reason) => {
+          store.markCancelled(reason)
+        },
         onDone: () => {
           store.finishStreaming('assistant')
           resolve()
@@ -303,10 +318,14 @@ function sendStream(text, atts) {
   })
 }
 
-/** 停止生成 */
+/** 停止生成: 前端断开 SSE + 通知后端真正取消 LLM 请求 */
 function stopGeneration() {
   if (abortController.value) {
     abortController.value.abort()
+  }
+  const rid = currentRequestId.value
+  if (rid) {
+    chatApi.cancel(rid).catch(() => {})
   }
 }
 

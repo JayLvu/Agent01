@@ -28,7 +28,7 @@ public class WebClientConfig {
 
     /**
      * DeepSeek API 专用 WebClient
-     * 配置: 连接超时 10s,读/写超时 60s,自动重试
+     * 配置: 连接超时 10s,读/写超时随配置;baseUrl 与 Authorization 由调用方(多模型路由)按请求指定。
      */
     @Bean
     public WebClient deepSeekWebClient() {
@@ -41,8 +41,6 @@ public class WebClientConfig {
                         .addHandlerLast(new WriteTimeoutHandler(timeout.getSeconds(), TimeUnit.SECONDS)));
 
         return WebClient.builder()
-                .baseUrl(deepSeekProperties.getBaseUrl())
-                .defaultHeader("Authorization", "Bearer " + deepSeekProperties.getApiKey())
                 .defaultHeader("Content-Type", "application/json")
                 .defaultHeader("Accept", "application/json")
                 .clientConnector(new ReactorClientHttpConnector(httpClient))

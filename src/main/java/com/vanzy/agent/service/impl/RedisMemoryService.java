@@ -27,6 +27,7 @@ import java.util.UUID;
 public class RedisMemoryService implements MemoryService {
 
     private static final String KEY_PREFIX = "agent:memory:";
+    private static final String SUMMARY_PREFIX = "agent:memory:summary:";
 
     private final RedisTemplate<String, Object> redisTemplate;
     private final AgentProperties properties;
@@ -74,7 +75,30 @@ public class RedisMemoryService implements MemoryService {
     @Override
     public void clearHistory(String sessionId) {
         redisTemplate.delete(KEY_PREFIX + sessionId);
+        redisTemplate.delete(SUMMARY_PREFIX + sessionId);
         log.info("已清空会话历史: {}", sessionId);
+    }
+
+    @Override
+    public void saveSummary(String sessionId, String summary) {
+        redisTemplate.opsForValue().set(SUMMARY_PREFIX + sessionId, summary,
+                Duration.ofHours(properties.getMemory().getTtlHours()));
+    }
+
+    @Override
+    public String getSummary(String sessionId) {
+        Object v = redisTemplate.opsForValue().get(SUMMARY_PREFIX + sessionId);
+        return v == null ? null : String.valueOf(v);
+    }
+
+    @Override
+    public void trimHistory(String sessionId, int keepRecent) {
+        if (keepRecent <= 0) {
+            clearHistory(sessionId);
+            return;
+        }
+        redisTemplate.opsForList().trim(KEY_PREFIX + sessionId, -keepRecent, -1);
+        redisTemplate.expire(KEY_PREFIX + sessionId, Duration.ofHours(properties.getMemory().getTtlHours()));
     }
 
     @Override

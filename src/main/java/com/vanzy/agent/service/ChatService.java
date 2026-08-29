@@ -22,12 +22,13 @@ public interface ChatService {
 
     /**
      * 流式对话: 通过 SSE 返回事件流
-     * 事件类型包括 Token(文本)、ToolCall(工具调用)、ToolResult(工具结果)、Error(错误)
+     * 事件类型包括 Token(文本)、ToolCall(工具调用)、ToolResult(工具结果)、Usage(统计)、Cancelled(取消)、Error(错误)
      *
-     * @param request 对话请求
+     * @param request      对话请求
+     * @param cancelSignal 取消信号(用户停止生成时触发,可真正中断底层 LLM 请求)
      * @return 事件流 Flux
      */
-    Flux<StreamEvent> chatStream(ChatRequest request);
+    Flux<StreamEvent> chatStream(ChatRequest request, reactor.core.publisher.Flux<String> cancelSignal);
 
     /**
      * 清空指定会话的历史

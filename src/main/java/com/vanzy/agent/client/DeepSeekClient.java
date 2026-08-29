@@ -1,11 +1,11 @@
 package com.vanzy.agent.client;
 
-import com.vanzy.agent.config.DeepSeekProperties;
 import com.vanzy.agent.exception.LlmException;
 import com.vanzy.agent.model.ChatMessage;
 import com.vanzy.agent.model.DeepSeekDtos.DeepSeekRequest;
 import com.vanzy.agent.model.DeepSeekDtos.DeepSeekResponse;
 import com.vanzy.agent.model.DeepSeekDtos.DeepSeekStreamChunk;
+import com.vanzy.agent.model.ModelConfig;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.ParameterizedTypeReference;
@@ -20,13 +20,14 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * DeepSeek API 客户端
+ * DeepSeek API 客户端(OpenAI 兼容格式)
  *
- * 支持两种调用模式:
- * 1. 同步对话: 一次性返回完整回复
- * 2. 流式对话(SSE): 通过 Server-Sent Events 逐 token 返回
+ * 支持:
+ * 1. 同步对话(一次性返回)
+ * 2. 流式对话(SSE,逐 token 返回,流式携带 usage)
+ * 3. 多模型路由(每次调用按 {@link ModelConfig} 动态指定 baseUrl / apiKey / 模型名)
  *
- * API 兼容 OpenAI 格式,文档: https://api-docs.deepseek.com
+ * API 文档: https://api-docs.deepseek.com
  *
  * @author VanzyLiu
  */
@@ -34,85 +35,57 @@ import java.util.Map;
 @Component
 public class DeepSeekClient {
 
-    private static final String CHAT_PATH = "/v1/chat/completions";
+    private static final String CHAT_PATH = "/chat/completions";
 
     private final WebClient webClient;
-    private final DeepSeekProperties properties;
     private final ObjectMapper objectMapper;
 
-    public DeepSeekClient(WebClient deepSeekWebClient, DeepSeekProperties properties, ObjectMapper objectMapper) {
+    public DeepSeekClient(WebClient deepSeekWebClient, ObjectMapper objectMapper) {
         this.webClient = deepSeekWebClient;
-        this.properties = properties;
         this.objectMapper = objectMapper;
     }
 
     /**
-     * 同步对话: 一次性返回完整回复
-     *
-     * @param messages 对话消息列表(含 system + history + 当前用户消息)
-     * @return DeepSeek 完整响应
+     * 同步对话(可选工具),返回完整响应
      */
-    public Mono<DeepSeekResponse> chat(List<ChatMessage> messages) {
-        return chat(messages, null);
-    }
-
-    /**
-     * 同步对话(支持工具调用): 一次性返回完整回复
-     *
-     * @param messages 对话消息列表
-     * @param tools    工具 schema 列表(为 null 则不带 tools)
-     * @return DeepSeek 完整响应
-     */
-    public Mono<DeepSeekResponse> chat(List<ChatMessage> messages, List<Map<String, Object>> tools) {
-        DeepSeekRequest request = buildRequest(messages, false);
+    public Mono<DeepSeekResponse> chat(List<ChatMessage> messages, List<Map<String, Object>> tools, ModelConfig model) {
+        DeepSeekRequest request = buildRequest(messages, false, model);
         if (tools != null && !tools.isEmpty()) {
             request.setTools(tools);
             request.setToolChoice("auto");
         }
-        log.debug("调用 DeepSeek 同步对话, 消息数: {}, 是否带工具: {}", messages.size(), tools != null);
+        log.debug("调用 DeepSeek 同步对话: model={}, 消息数={}, 工具数={}",
+                model.getName(), messages.size(), tools == null ? 0 : tools.size());
 
         return webClient.post()
-                .uri(CHAT_PATH)
+                .uri(model.getBaseUrl() + CHAT_PATH)
+                .header("Authorization", "Bearer " + model.getApiKey())
                 .bodyValue(request)
                 .retrieve()
                 .bodyToMono(DeepSeekResponse.class)
-                .doOnError(e -> log.error("DeepSeek 调用失败", e))
+                .doOnError(e -> log.error("DeepSeek 调用失败: model={}", model.getName(), e))
                 .onErrorMap(e -> new LlmException("DeepSeek 调用失败: " + e.getMessage(), e));
     }
 
     /**
-     * 流式对话(SSE): 返回 token 流(不带工具)
-     *
-     * @param messages 对话消息列表
-     * @return DeepSeek 流式响应块 Flux
+     * 流式对话(SSE,可选工具),返回 token 流;最后一个 chunk 携带 usage。
      */
-    public Flux<DeepSeekStreamChunk> chatStream(List<ChatMessage> messages) {
-        return chatStream(messages, null);
-    }
-
-    /**
-     * 流式对话(SSE): 返回 token 流(支持工具调用)
-     *
-     * @param messages 对话消息列表
-     * @param tools    工具 schema 列表(为 null 则不带 tools)
-     * @return DeepSeek 流式响应块 Flux
-     */
-    public Flux<DeepSeekStreamChunk> chatStream(List<ChatMessage> messages, List<Map<String, Object>> tools) {
-        DeepSeekRequest request = buildRequest(messages, true);
+    public Flux<DeepSeekStreamChunk> chatStream(List<ChatMessage> messages, List<Map<String, Object>> tools, ModelConfig model) {
+        DeepSeekRequest request = buildRequest(messages, true, model);
         if (tools != null && !tools.isEmpty()) {
             request.setTools(tools);
             request.setToolChoice("auto");
         }
-        log.debug("调用 DeepSeek 流式对话, 消息数: {}, 是否带工具: {}", messages.size(), tools != null);
+        log.debug("调用 DeepSeek 流式对话: model={}, 消息数={}, 工具数={}",
+                model.getName(), messages.size(), tools == null ? 0 : tools.size());
 
         return webClient.post()
-                .uri(CHAT_PATH)
+                .uri(model.getBaseUrl() + CHAT_PATH)
+                .header("Authorization", "Bearer " + model.getApiKey())
                 .accept(MediaType.TEXT_EVENT_STREAM)
                 .bodyValue(request)
                 .retrieve()
                 .bodyToFlux(new ParameterizedTypeReference<ServerSentEvent<String>>() {})
-                // 第 1 步: 从 SSE 帧中提取 data 字段,空 data / [DONE] 帧(心跳/取消信号后的残余帧)在此处直接丢弃
-                // 使用 .handle 而不是 .map + .filter, 是因为 Reactor 禁止 .map 的 mapper 返回 null
                 .<String>handle((sse, sink) -> {
                     String data = sse.data();
                     if (data == null) return;
@@ -120,27 +93,29 @@ public class DeepSeekClient {
                     if (trimmed.isEmpty() || "[DONE]".equals(trimmed)) return;
                     sink.next(data);
                 })
-                // 第 2 步: JSON 解析成 DeepSeekStreamChunk,解析失败的脏数据(或 comment/心跳行)直接跳过
                 .<DeepSeekStreamChunk>handle((data, sink) -> {
                     try {
                         sink.next(objectMapper.readValue(data, DeepSeekStreamChunk.class));
                     } catch (Exception e) {
-                        // 某些上游会插入 comment 行或 SSE 心跳,解析失败是预料之内,仅 debug 级即可
-                        log.debug("解析 SSE 数据块失败,跳过该行(可能是 comment/心跳帧): dataPrefix={}",
+                        log.debug("解析 SSE 数据块失败,跳过(可能为 comment/心跳帧): dataPrefix={}",
                                 data.length() > 120 ? data.substring(0, 120) + "..." : data);
                     }
                 })
-                .doOnError(e -> log.error("DeepSeek 流式调用失败", e))
+                .doOnError(e -> log.error("DeepSeek 流式调用失败: model={}", model.getName(), e))
                 .onErrorMap(e -> new LlmException("DeepSeek 流式调用失败: " + e.getMessage(), e));
     }
 
-    private DeepSeekRequest buildRequest(List<ChatMessage> messages, boolean stream) {
+    private DeepSeekRequest buildRequest(List<ChatMessage> messages, boolean stream, ModelConfig model) {
         DeepSeekRequest request = new DeepSeekRequest();
-        request.setModel(properties.getModel());
+        request.setModel(model.getName());
         request.setMessages(messages);
-        request.setTemperature(properties.getTemperature());
-        request.setMaxTokens(properties.getMaxTokens());
+        request.setTemperature(model.getTemperature());
+        request.setMaxTokens(model.getMaxTokens());
         request.setStream(stream);
+        if (stream) {
+            // 让上游在最后一个 chunk 返回 usage,用于 token 统计
+            request.setStreamOptions(Map.of("include_usage", true));
+        }
         return request;
     }
 }

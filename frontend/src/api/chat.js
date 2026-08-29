@@ -24,6 +24,11 @@ export default {
     return request.delete(`/chat/${sessionId}`)
   },
 
+  /** 停止生成(真正取消服务端进行中的流式请求) */
+  cancel(requestId) {
+    return request.post(`/chat/cancel/${requestId}`)
+  },
+
   /** 健康检查 */
   health() {
     return request.get('/health')

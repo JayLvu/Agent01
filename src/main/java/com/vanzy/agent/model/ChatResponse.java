@@ -48,5 +48,9 @@ public class ChatResponse {
         private int promptTokens;
         private int completionTokens;
         private int totalTokens;
+        /** 本次调用成本(按配置价格估算) */
+        private Double cost;
+        /** 货币单位 */
+        private String currency;
     }
 }

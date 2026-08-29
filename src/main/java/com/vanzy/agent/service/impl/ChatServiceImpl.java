@@ -4,23 +4,27 @@ import com.vanzy.agent.client.DeepSeekClient;
 import com.vanzy.agent.config.AgentProperties;
 import com.vanzy.agent.config.DeepSeekProperties;
 import com.vanzy.agent.exception.AgentException;
+import com.vanzy.agent.model.AttachmentFile;
 import com.vanzy.agent.model.ChatMessage;
 import com.vanzy.agent.model.ChatRequest;
 import com.vanzy.agent.model.ChatResponse;
 import com.vanzy.agent.model.DeepSeekDtos.DeepSeekResponse;
 import com.vanzy.agent.model.DeepSeekDtos.DeepSeekStreamChunk;
-import com.vanzy.agent.model.DocumentChunk;
+import com.vanzy.agent.model.ModelConfig;
 import com.vanzy.agent.model.StreamEvent;
-import com.vanzy.agent.model.AttachmentFile;
 import com.vanzy.agent.rag.RagService;
+import com.vanzy.agent.routing.ModelRouter;
+import com.vanzy.agent.service.AuditLogService;
 import com.vanzy.agent.service.ChatService;
 import com.vanzy.agent.service.MemoryService;
+import com.vanzy.agent.service.TokenUsageService;
 import com.vanzy.agent.skill.SkillService;
 import com.vanzy.agent.tool.Tool;
 import com.vanzy.agent.tool.ToolRegistry;
 import com.vanzy.agent.tool.ToolResult;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.util.CollectionUtils;
@@ -34,16 +38,22 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 /**
  * 核心对话服务实现
  *
  * 完整流程:
- * 1. 校验 sessionId, 无则新建
- * 2. 从 MemoryService 获取历史消息
- * 3. (可选)从 RagService 检索相关文档,拼装 system prompt
- * 4. 调用 DeepSeek 获取回复(同步 / 流式)
- * 5. 将本轮 user + assistant 消息存回 MemoryService
+ * 1. 多模型路由(按请求/关键词选择模型)
+ * 2. 记忆摘要压缩(历史超预算自动压缩)
+ * 3. 从 MemoryService 获取历史 + 摘要,组装 system prompt(Skill + RAG + 摘要)
+ * 4. 调用 DeepSeek(同步 / 流式),工具循环带迭代上限 + 并行执行 + 取消
+ * 5. 记录 Token 成本与审计日志
  *
  * @author VanzyLiu
  */
@@ -62,11 +72,20 @@ public class ChatServiceImpl implements ChatService {
     private final DeepSeekProperties deepSeekProperties;
     private final AgentProperties agentProperties;
     private final SkillService skillService;
+    private final ModelRouter modelRouter;
+    private final TokenUsageService tokenUsageService;
+    private final AuditLogService auditLogService;
+
+    /** 工具执行线程池(并行工具调用 + 阻塞型工具不阻塞 reactor 线程) */
+    private final ExecutorService toolExecutor =
+            Executors.newFixedThreadPool(Math.max(4, Runtime.getRuntime().availableProcessors()));
 
     public ChatServiceImpl(DeepSeekClient deepSeekClient, MemoryService memoryService,
                            RagService ragService, ToolRegistry toolRegistry,
                            ObjectMapper objectMapper, DeepSeekProperties deepSeekProperties,
-                           AgentProperties agentProperties, SkillService skillService) {
+                           AgentProperties agentProperties, SkillService skillService,
+                           ModelRouter modelRouter, TokenUsageService tokenUsageService,
+                           AuditLogService auditLogService) {
         this.deepSeekClient = deepSeekClient;
         this.memoryService = memoryService;
         this.ragService = ragService;
@@ -75,13 +94,28 @@ public class ChatServiceImpl implements ChatService {
         this.deepSeekProperties = deepSeekProperties;
         this.agentProperties = agentProperties;
         this.skillService = skillService;
+        this.modelRouter = modelRouter;
+        this.tokenUsageService = tokenUsageService;
+        this.auditLogService = auditLogService;
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        toolExecutor.shutdownNow();
     }
 
     @Override
     public ChatResponse chat(ChatRequest request) {
         long start = System.currentTimeMillis();
+        ModelConfig model = modelRouter.resolve(request);
         String sessionId = ensureSessionId(request.getSessionId());
-        List<ChatMessage> messages = buildMessages(request, sessionId);
+
+        // 1. 记忆摘要压缩(若历史超预算)
+        List<ChatMessage> history = loadHistoryWithCompression(sessionId);
+        String summary = memoryService.getSummary(sessionId);
+
+        // 2. 组装消息
+        List<ChatMessage> messages = buildMessages(request, sessionId, history, summary);
         String savedUserMsg = buildUserMessageWithAttachments(request.getMessage(), request.getAttachments());
         memoryService.saveMessage(sessionId, ChatMessage.user(savedUserMsg));
 
@@ -89,84 +123,94 @@ public class ChatServiceImpl implements ChatService {
                 && agentProperties.getTools().isEnabled();
 
         String content;
-        DeepSeekResponse lastResp;
+        UsageAcc usageAcc = new UsageAcc();
         if (toolsEnabled) {
-            SyncToolResult r = chatWithToolsSync(sessionId, messages);
+            SyncToolResult r = chatWithToolsSync(sessionId, messages, model, usageAcc);
             content = r.content();
-            lastResp = r.lastResp();
         } else {
-            lastResp = deepSeekClient.chat(messages)
-                    .block(Duration.ofSeconds(deepSeekProperties.getTimeout().getSeconds()));
+            DeepSeekResponse lastResp = deepSeekClient.chat(messages, null, model)
+                    .block(Duration.ofSeconds(model.getTimeout() != null ? model.getTimeout().getSeconds() : 60));
             if (lastResp == null || CollectionUtils.isEmpty(lastResp.getChoices())) {
-                throw new AgentException("DeepSeek 返回空响应");
+                throw new AgentException("DeepSeek 返回空响应(可能超时)");
             }
             content = lastResp.getChoices().get(0).getMessage().getContent();
             if (content == null) content = "";
+            usageAcc.add(lastResp.getUsage());
         }
 
         memoryService.saveMessage(sessionId, ChatMessage.assistant(content));
 
         long duration = System.currentTimeMillis() - start;
-        log.info("同步对话完成: session={}, duration={}ms, tools={}, tokens={}",
-                sessionId, duration, toolsEnabled,
-                lastResp != null && lastResp.getUsage() != null ? lastResp.getUsage().getTotalTokens() : -1);
+        double cost = tokenUsageService.computeCost(model, usageAcc.prompt, usageAcc.completion);
+        tokenUsageService.record(sessionId, model.getName(), usageAcc.prompt, usageAcc.completion, usageAcc.total, model);
+        auditLogService.log(AuditLogService.ACTION_CHAT, sessionId, null,
+                "model=" + model.getName() + " tokens=" + usageAcc.total + " tools=" + toolsEnabled,
+                true, duration);
 
         return ChatResponse.builder()
                 .sessionId(sessionId)
                 .content(content)
-                .model(lastResp != null ? lastResp.getModel() : null)
+                .model(model.getName())
                 .durationMs(duration)
                 .timestamp(LocalDateTime.now())
-                .usage(lastResp != null ? buildUsage(lastResp) : null)
+                .usage(ChatResponse.Usage.builder()
+                        .promptTokens(usageAcc.prompt)
+                        .completionTokens(usageAcc.completion)
+                        .totalTokens(usageAcc.total)
+                        .cost(cost)
+                        .currency(agentProperties.getCost().getCurrency())
+                        .build())
                 .build();
     }
 
     /**
-     * 同步版工具调用循环(与流式逻辑等价,只是把最终文本聚合返回)
+     * 同步版工具调用循环(带迭代上限,支持并行工具调用)
      */
-    private SyncToolResult chatWithToolsSync(String sessionId, List<ChatMessage> messages) {
+    private SyncToolResult chatWithToolsSync(String sessionId, List<ChatMessage> messages,
+                                             ModelConfig model, UsageAcc usageAcc) {
         List<Map<String, Object>> toolsSchema = toolRegistry.buildToolsSchema();
-        Duration timeout = Duration.ofSeconds(deepSeekProperties.getTimeout().getSeconds());
+        Duration timeout = Duration.ofSeconds(model.getTimeout() != null ? model.getTimeout().getSeconds() : 60);
 
         List<ChatMessage> working = new ArrayList<>(messages);
-        DeepSeekResponse lastResp = null;
-        int iter = 0;
-        while (true) {
-            iter++;
-            DeepSeekResponse resp = deepSeekClient.chat(working, toolsSchema).block(timeout);
+        int maxIter = Math.max(1, agentProperties.getTools().getMaxIterations());
+
+        for (int iter = 1; iter <= maxIter; iter++) {
+            DeepSeekResponse resp = deepSeekClient.chat(working, toolsSchema, model).block(timeout);
             if (resp == null || CollectionUtils.isEmpty(resp.getChoices())) {
-                throw new AgentException("DeepSeek 返回空响应");
+                throw new AgentException("DeepSeek 返回空响应(可能超时)");
             }
-            lastResp = resp;
+            usageAcc.add(resp.getUsage());
             DeepSeekResponse.Choice choice = resp.getChoices().get(0);
             ChatMessage msg = choice.getMessage();
             List<ChatMessage.ToolCall> toolCalls = msg.getToolCalls();
 
             if (toolCalls != null && !toolCalls.isEmpty()) {
                 working.add(ChatMessage.assistantWithToolCalls(toolCalls));
-                for (ChatMessage.ToolCall tc : toolCalls) {
-                    String toolName = tc.getFunction() != null ? tc.getFunction().getName() : "";
-                    String argsJson = tc.getFunction() != null ? tc.getFunction().getArguments() : "{}";
-                    ToolResult result = executeToolCall(toolName, argsJson);
-                    working.add(ChatMessage.toolResult(tc.getId(), toolName, result.getContent()));
-                }
+                List<ChatMessage> toolResults = executeToolCalls(toolCalls, sessionId, null);
+                working.addAll(toolResults);
                 continue;
             }
             String content = msg.getContent();
             if (content == null) content = "";
             log.info("同步工具调用对话完成: session={}, 迭代={}", sessionId, iter);
-            return new SyncToolResult(content, lastResp);
+            return new SyncToolResult(content);
         }
+        // 达到迭代上限仍未结束: 返回降级提示
+        String fallback = "已达到工具调用最大迭代次数(" + maxIter + "),已停止。请尝试更具体的问题。";
+        return new SyncToolResult(fallback);
     }
 
-    private record SyncToolResult(String content, DeepSeekResponse lastResp) {}
+    private record SyncToolResult(String content) {}
 
     @Override
-    public Flux<StreamEvent> chatStream(ChatRequest request) {
+    public Flux<StreamEvent> chatStream(ChatRequest request, Flux<String> cancelSignal) {
+        ModelConfig model = modelRouter.resolve(request);
         String sessionId = ensureSessionId(request.getSessionId());
-        List<ChatMessage> messages = buildMessages(request, sessionId);
 
-        // 流式场景: 先保存 user 消息,assistant 消息流式收集后保存
+        List<ChatMessage> history = loadHistoryWithCompression(sessionId);
+        String summary = memoryService.getSummary(sessionId);
+
+        List<ChatMessage> messages = buildMessages(request, sessionId, history, summary);
         String savedUserMsg = buildUserMessageWithAttachments(request.getMessage(), request.getAttachments());
         memoryService.saveMessage(sessionId, ChatMessage.user(savedUserMsg));
 
@@ -174,73 +218,83 @@ public class ChatServiceImpl implements ChatService {
                 && agentProperties.getTools().isEnabled();
 
         if (toolsEnabled) {
-            return chatWithToolsFlow(sessionId, messages);
+            return chatWithToolsFlow(sessionId, messages, model, cancelSignal);
         }
-        return chatPlainStream(sessionId, messages);
+        return chatPlainStream(sessionId, messages, model, cancelSignal);
     }
 
     /**
-     * 普通流式对话(无工具): 原 token 流,包装为 Token 事件
+     * 普通流式对话(无工具)
      */
-    private Flux<StreamEvent> chatPlainStream(String sessionId, List<ChatMessage> messages) {
+    private Flux<StreamEvent> chatPlainStream(String sessionId, List<ChatMessage> messages,
+                                              ModelConfig model, Flux<String> cancelSignal) {
         StringBuilder fullReply = new StringBuilder();
-        return deepSeekClient.chatStream(messages)
+        AtomicReference<DeepSeekResponse.Usage> usageRef = new AtomicReference<>();
+
+        Flux<StreamEvent> tokenFlux = deepSeekClient.chatStream(messages, null, model)
+                .takeUntilOther(cancelSignal)
                 .<StreamEvent>handle((chunk, sink) -> {
+                    if (chunk.getUsage() != null) usageRef.set(chunk.getUsage());
                     String token = extractDeltaContent(chunk);
                     if (StringUtils.hasText(token)) {
                         sink.next(new StreamEvent.Token(token));
                     }
                 })
-                .doOnNext(e -> fullReply.append(((StreamEvent.Token) e).content()))
-                .doOnComplete(() -> {
-                    memoryService.saveMessage(sessionId, ChatMessage.assistant(fullReply.toString()));
+                .doOnNext(e -> fullReply.append(((StreamEvent.Token) e).content()));
+
+        return tokenFlux
+                .concatWith(Mono.fromSupplier(() -> {
+                    String content = fullReply.toString();
+                    memoryService.saveMessage(sessionId, ChatMessage.assistant(content));
                     log.info("流式对话完成: session={}", sessionId);
-                })
-                .doOnError(e -> log.error("流式对话失败: session={}", sessionId, e))
-                .onErrorResume(e -> Flux.just(new StreamEvent.Error(e.getMessage())));
+                    return buildUsageEvent(sessionId, model, usageRef.get());
+                }))
+                .onErrorResume(e -> {
+                    log.error("流式对话失败: session={}", sessionId, e);
+                    return Flux.just(new StreamEvent.Error(e.getMessage()));
+                });
     }
 
     /**
-     * 工具调用流式对话: 真正的 LLM 流式调用 + while 循环多轮工具调用
-     *
-     * 流程(每一轮):
-     * 1. 带 tools 调用 LLM **流式**接口
-     * 2. 逐 chunk 推送 Token 事件(实时显示 LLM 思考/文本)
-     * 3. 跨 chunk 按 index 累加 tool_calls 增量(arguments 是分段拼接的 JSON 字符串)
-     * 4. 流结束后:
-     *    - 若存在 tool_calls: 推送 ToolCall 事件 -> 执行工具 -> 推送 ToolResult 事件 -> 回传 assistant + tool 消息 -> 回到步骤 1 继续下一轮
-     *    - 若纯文本: 结束
+     * 工具调用流式对话: LLM 流式 + while 循环多轮工具调用(迭代上限 + 并行 + 取消)
      */
-    private Flux<StreamEvent> chatWithToolsFlow(String sessionId, List<ChatMessage> messages) {
+    private Flux<StreamEvent> chatWithToolsFlow(String sessionId, List<ChatMessage> messages,
+                                                ModelConfig model, Flux<String> cancelSignal) {
         List<Map<String, Object>> toolsSchema = toolRegistry.buildToolsSchema();
-        Duration timeout = Duration.ofSeconds(deepSeekProperties.getTimeout().getSeconds());
+        Duration timeout = Duration.ofSeconds(model.getTimeout() != null ? model.getTimeout().getSeconds() : 60);
+        int maxIter = Math.max(1, agentProperties.getTools().getMaxIterations());
 
         return Flux.<StreamEvent>create(sink -> {
             List<ChatMessage> working = new ArrayList<>(messages);
-            int iter = 0;
+            AtomicBoolean cancelled = new AtomicBoolean(false);
+            cancelSignal.subscribe(v -> cancelled.set(true));
+            UsageAcc usageAcc = new UsageAcc();
             boolean completed = false;
             try {
-                while (true) {
+                int iter = 0;
+                while (iter < maxIter) {
                     iter++;
+                    if (cancelled.get()) {
+                        sink.next(new StreamEvent.Cancelled("用户已停止生成"));
+                        break;
+                    }
 
-                    // 本轮累积: 文本内容 + 工具调用(跨 chunk 按 index 拼接 arguments)
                     StringBuilder assistantContent = new StringBuilder();
                     List<ChatMessage.ToolCall> accumToolCalls = new ArrayList<>();
+                    AtomicReference<DeepSeekResponse.Usage> roundUsage = new AtomicReference<>();
 
-                    // 消费一轮流式响应(阻塞等待整轮流完成,逐 token 往外推送)
-                    deepSeekClient.chatStream(working, toolsSchema)
+                    deepSeekClient.chatStream(working, toolsSchema, model)
+                            .takeUntilOther(cancelSignal)
                             .doOnNext(chunk -> {
+                                if (chunk.getUsage() != null) roundUsage.set(chunk.getUsage());
                                 if (CollectionUtils.isEmpty(chunk.getChoices())) return;
                                 DeepSeekStreamChunk.Choice choice = chunk.getChoices().get(0);
 
-                                // 1) 增量文本: 有就推送 Token + 累积到总内容
                                 String token = extractDeltaContent(chunk);
                                 if (StringUtils.hasText(token)) {
                                     assistantContent.append(token);
                                     sink.next(new StreamEvent.Token(token));
                                 }
-
-                                // 2) 增量 tool_calls: 按 index 对齐,跨 chunk 拼接 arguments(分段 JSON)
                                 if (choice.getDelta() == null
                                         || CollectionUtils.isEmpty(choice.getDelta().getToolCalls())) {
                                     return;
@@ -268,41 +322,46 @@ public class ChatServiceImpl implements ChatService {
                                     }
                                 }
                             })
-                            .blockLast(timeout); // 阻塞直到本轮流结束(或超时)
+                            .blockLast(timeout);
 
-                    // ---------- 有工具调用 → 执行工具后继续下一轮 ----------
+                    usageAcc.add(roundUsage.get());
+
+                    if (cancelled.get()) {
+                        sink.next(new StreamEvent.Cancelled("用户已停止生成"));
+                        break;
+                    }
+
                     if (!accumToolCalls.isEmpty()) {
-                        // 把 assistant 消息(携带 tool_calls + 少量文本)加入上下文
                         working.add(ChatMessage.builder()
                                 .role("assistant")
                                 .content(assistantContent.length() > 0 ? assistantContent.toString() : null)
                                 .toolCalls(accumToolCalls)
                                 .build());
-
-                        for (ChatMessage.ToolCall tc : accumToolCalls) {
-                            String toolName = tc.getFunction() != null ? tc.getFunction().getName() : "";
-                            String argsJson = (tc.getFunction() != null && tc.getFunction().getArguments() != null)
-                                    ? tc.getFunction().getArguments() : "{}";
-                            long startedAt = System.currentTimeMillis();
-                            sink.next(new StreamEvent.ToolCall(toolName, argsJson, tc.getId(), startedAt));
-
-                            ToolResult result = executeToolCall(toolName, argsJson);
-                            long finishedAt = System.currentTimeMillis();
-                            sink.next(new StreamEvent.ToolResult(toolName, tc.getId(), result.getContent(),
-                                    result.isSuccess(), result.getDurationMs(), startedAt, finishedAt));
-                            working.add(ChatMessage.toolResult(tc.getId(), toolName, result.getContent()));
-                        }
-                        continue; // 回到 while 头部进行下一轮流式调用
+                        List<ChatMessage> toolResults = executeToolCalls(accumToolCalls, sessionId, sink);
+                        working.addAll(toolResults);
+                        continue;
                     }
 
-                    // ---------- 无工具调用 → 结束(文本已在 doOnNext 逐 token 推送) ----------
                     String finalContent = assistantContent.toString();
                     memoryService.saveMessage(sessionId, ChatMessage.assistant(finalContent));
+                    sink.next(buildUsageEvent(sessionId, model, usageAcc));
                     log.info("工具调用流式对话完成: session={}, 迭代={}, contentLen={}",
                             sessionId, iter, finalContent.length());
                     sink.complete();
                     completed = true;
                     return;
+                }
+                if (!completed && iter >= maxIter) {
+                    String fallback = "已达到工具调用最大迭代次数(" + maxIter + "),已停止。";
+                    memoryService.saveMessage(sessionId, ChatMessage.assistant(fallback));
+                    sink.next(new StreamEvent.Token(fallback));
+                    sink.next(buildUsageEvent(sessionId, model, usageAcc));
+                    sink.complete();
+                    completed = true;
+                    return;
+                }
+                if (!completed) {
+                    sink.complete();
                 }
             } catch (Exception e) {
                 log.error("工具调用流式对话异常: session={}", sessionId, e);
@@ -313,13 +372,74 @@ public class ChatServiceImpl implements ChatService {
         }, FluxSink.OverflowStrategy.BUFFER);
     }
 
-    /** 执行单个工具调用(外层统一测时,保证 durationMs 始终为真实值) */
-    private ToolResult executeToolCall(String toolName, String argsJson) {
+    /**
+     * 执行一组工具调用;parallel=true 时并发执行,结果按原顺序返回。
+     * sink 非空时推送 ToolCall / ToolResult 事件(供前端渲染)。
+     */
+    private List<ChatMessage> executeToolCalls(List<ChatMessage.ToolCall> toolCalls, String sessionId,
+                                               FluxSink<StreamEvent> sink) {
+        int n = toolCalls.size();
+        String[] names = new String[n];
+        String[] args = new String[n];
+        String[] ids = new String[n];
+        long[] startedAt = new long[n];
+        for (int i = 0; i < n; i++) {
+            ChatMessage.ToolCall tc = toolCalls.get(i);
+            names[i] = tc.getFunction() != null ? tc.getFunction().getName() : "";
+            args[i] = (tc.getFunction() != null && tc.getFunction().getArguments() != null)
+                    ? tc.getFunction().getArguments() : "{}";
+            ids[i] = tc.getId();
+            startedAt[i] = System.currentTimeMillis();
+            if (sink != null) sink.next(new StreamEvent.ToolCall(names[i], args[i], ids[i], startedAt[i]));
+        }
+
+        List<ChatMessage> results = new ArrayList<>();
+        boolean parallel = agentProperties.getTools().isParallel() && n > 1;
+        if (!parallel) {
+            for (int i = 0; i < n; i++) {
+                ToolResult r = executeToolCall(names[i], args[i], sessionId);
+                emitToolResult(sink, names[i], ids[i], r, startedAt[i]);
+                results.add(ChatMessage.toolResult(ids[i], names[i], r.getContent()));
+            }
+            return results;
+        }
+
+        // 并行执行
+        List<CompletableFuture<ToolResult>> futures = new ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            final int idx = i;
+            futures.add(CompletableFuture.supplyAsync(
+                    () -> executeToolCall(names[idx], args[idx], sessionId), toolExecutor));
+        }
+        for (int i = 0; i < n; i++) {
+            ToolResult r;
+            try {
+                r = futures.get(i).join();
+            } catch (Exception e) {
+                r = ToolResult.error("执行异常: " + e.getMessage());
+            }
+            emitToolResult(sink, names[i], ids[i], r, startedAt[i]);
+            results.add(ChatMessage.toolResult(ids[i], names[i], r.getContent()));
+        }
+        return results;
+    }
+
+    private void emitToolResult(FluxSink<StreamEvent> sink, String name, String callId, ToolResult r, long startedAt) {
+        if (sink == null) return;
+        long finishedAt = System.currentTimeMillis();
+        sink.next(new StreamEvent.ToolResult(name, callId, r.getContent(), r.isSuccess(),
+                r.getDurationMs(), startedAt, finishedAt));
+    }
+
+    /** 执行单个工具调用(测时 + 审计) */
+    private ToolResult executeToolCall(String toolName, String argsJson, String sessionId) {
         long start = System.currentTimeMillis();
         Tool tool = toolRegistry.get(toolName);
         if (tool == null) {
             ToolResult r = ToolResult.error("未知工具: " + toolName);
             r.setDurationMs(System.currentTimeMillis() - start);
+            auditLogService.log(AuditLogService.ACTION_TOOL_CALL, sessionId, toolName,
+                    "未知工具", false, r.getDurationMs());
             return r;
         }
         try {
@@ -328,24 +448,39 @@ public class ChatServiceImpl implements ChatService {
                     : Map.of();
             log.info("调用工具: {} 参数: {}", toolName, argsJson);
             ToolResult result = tool.execute(args);
-            // 外层统一耗时 = 调用真正总耗时,覆盖工具内部未精确设置的 0ms
             result.setDurationMs(System.currentTimeMillis() - start);
+            auditLogService.log(AuditLogService.ACTION_TOOL_CALL, sessionId, toolName,
+                    "success=" + result.isSuccess() + " args=" + truncate(argsJson, 300),
+                    result.isSuccess(), result.getDurationMs());
             return result;
         } catch (Exception e) {
             ToolResult r = ToolResult.error("参数解析失败: " + e.getMessage());
             r.setDurationMs(System.currentTimeMillis() - start);
+            auditLogService.log(AuditLogService.ACTION_TOOL_CALL, sessionId, toolName,
+                    "参数解析失败: " + e.getMessage(), false, r.getDurationMs());
             return r;
         }
     }
 
-    /** 将文本按指定字符数切分(模拟流式) */
-    private List<String> splitToChunks(String text, int size) {
-        List<String> chunks = new ArrayList<>();
-        for (int i = 0; i < text.length(); i += size) {
-            chunks.add(text.substring(i, Math.min(i + size, text.length())));
-        }
-        if (chunks.isEmpty()) chunks.add(text);
-        return chunks;
+    /** 构造 Usage 事件并落库 + 审计 */
+    private StreamEvent.Usage buildUsageEvent(String sessionId, ModelConfig model, DeepSeekResponse.Usage u) {
+        int p = u != null ? u.getPromptTokens() : 0;
+        int c = u != null ? u.getCompletionTokens() : 0;
+        int t = u != null ? u.getTotalTokens() : 0;
+        double cost = tokenUsageService.computeCost(model, p, c);
+        tokenUsageService.record(sessionId, model.getName(), p, c, t, model);
+        auditLogService.log(AuditLogService.ACTION_CHAT, sessionId, null,
+                "model=" + model.getName() + " tokens=" + t, true, null);
+        return new StreamEvent.Usage(model.getName(), p, c, t, cost, agentProperties.getCost().getCurrency());
+    }
+
+    private StreamEvent.Usage buildUsageEvent(String sessionId, ModelConfig model, UsageAcc acc) {
+        double cost = tokenUsageService.computeCost(model, acc.prompt, acc.completion);
+        tokenUsageService.record(sessionId, model.getName(), acc.prompt, acc.completion, acc.total, model);
+        auditLogService.log(AuditLogService.ACTION_CHAT, sessionId, null,
+                "model=" + model.getName() + " tokens=" + acc.total, true, null);
+        return new StreamEvent.Usage(model.getName(), acc.prompt, acc.completion, acc.total,
+                cost, agentProperties.getCost().getCurrency());
     }
 
     @Override
@@ -365,17 +500,58 @@ public class ChatServiceImpl implements ChatService {
         return StringUtils.hasText(sessionId) ? sessionId : memoryService.createSession();
     }
 
-    /**
-     * 构建完整消息列表: system + history + (RAG context) + user(含附件)
-     */
-    private List<ChatMessage> buildMessages(ChatRequest request, String sessionId) {
+    /** 加载历史;若超预算则先做记忆摘要压缩 */
+    private List<ChatMessage> loadHistoryWithCompression(String sessionId) {
+        List<ChatMessage> history = memoryService.getHistory(sessionId);
+        AgentProperties.Memory mem = agentProperties.getMemory();
+        if (mem.isSummarizeEnabled() && history.size() > mem.getSummarizeThreshold()) {
+            summarizeAndTrim(sessionId, history);
+            history = memoryService.getHistory(sessionId);
+        }
+        return history;
+    }
+
+    private void summarizeAndTrim(String sessionId, List<ChatMessage> history) {
+        int keepRecent = Math.max(2, agentProperties.getMemory().getSummarizeKeepRecent());
+        int splitIdx = Math.max(0, history.size() - keepRecent);
+        List<ChatMessage> older = history.subList(0, splitIdx);
+        if (older.isEmpty()) return;
+
+        String text = older.stream()
+                .map(m -> (m.getRole() == null ? "" : m.getRole()) + ": "
+                        + (m.getContent() == null ? "[工具调用]" : m.getContent()))
+                .collect(Collectors.joining("\n"));
+        String oldSummary = memoryService.getSummary(sessionId);
+        String prompt = (StringUtils.hasText(oldSummary) ? "已有摘要:\n" + oldSummary + "\n\n" : "")
+                + "历史对话:\n" + text;
+        List<ChatMessage> msgs = List.of(
+                ChatMessage.system("你是对话记忆压缩助手。请把以下历史对话压缩成一段简洁的中文摘要,"
+                        + "保留关键事实、用户偏好、结论与未完成事项,不超过 500 字。只输出摘要本身。"),
+                ChatMessage.user(prompt));
+        try {
+            ModelConfig model = modelRouter.defaultConfig();
+            DeepSeekResponse resp = deepSeekClient.chat(msgs, null, model)
+                    .block(Duration.ofSeconds(model.getTimeout() != null ? model.getTimeout().getSeconds() : 60));
+            String summary = resp != null && !CollectionUtils.isEmpty(resp.getChoices())
+                    ? resp.getChoices().get(0).getMessage().getContent() : null;
+            if (!StringUtils.hasText(summary)) summary = "(历史摘要生成失败)";
+            memoryService.saveSummary(sessionId, summary);
+            memoryService.trimHistory(sessionId, keepRecent);
+            log.info("记忆摘要压缩完成: session={}, 压缩 {} 条 -> {} 字符",
+                    sessionId, older.size(), summary.length());
+        } catch (Exception e) {
+            log.warn("记忆摘要压缩失败,跳过: session={}", sessionId, e);
+        }
+    }
+
+    /** 构建完整消息列表: system + (摘要) + history + user(含附件) */
+    private List<ChatMessage> buildMessages(ChatRequest request, String sessionId,
+                                            List<ChatMessage> history, String summary) {
         List<ChatMessage> messages = new ArrayList<>();
 
-        // 1. system prompt(可由用户临时覆盖)
         String systemPrompt = StringUtils.hasText(request.getSystemPrompt())
                 ? request.getSystemPrompt() : DEFAULT_SYSTEM_PROMPT;
 
-        // 2. Skill 注入(若启用): 把所有已启用 Skill 的内容追加到 System Prompt
         if (agentProperties.getSkill().isEnabled()) {
             String skillsPrompt = skillService.buildEnabledSkillsPrompt();
             if (StringUtils.hasText(skillsPrompt)) {
@@ -383,7 +559,6 @@ public class ChatServiceImpl implements ChatService {
             }
         }
 
-        // 3. RAG 上下文增强(若启用)
         boolean enableRag = request.getEnableRag() == null || request.getEnableRag();
         if (enableRag && agentProperties.getRag().isEnabled()) {
             String ragContext = ragService.retrieveContext(request.getMessage());
@@ -391,31 +566,17 @@ public class ChatServiceImpl implements ChatService {
                 systemPrompt = systemPrompt + "\n\n" + ragContext;
             }
         }
+
+        if (StringUtils.hasText(summary)) {
+            systemPrompt = systemPrompt + "\n\n# 历史对话摘要(更早的对话已压缩)\n" + summary;
+        }
+
         messages.add(ChatMessage.system(systemPrompt));
-
-        // 4. 历史对话
-        messages.addAll(memoryService.getHistory(sessionId));
-
-        // 5. 当前用户消息 + 附件内容
-        // 附件内容以"文件名 + 内容块"的形式插在用户消息前,让 LLM 知道这是用户提供的文件
-        String userMessage = buildUserMessageWithAttachments(request.getMessage(), request.getAttachments());
-        messages.add(ChatMessage.user(userMessage));
-
+        messages.addAll(history);
+        messages.add(ChatMessage.user(buildUserMessageWithAttachments(request.getMessage(), request.getAttachments())));
         return messages;
     }
 
-    /**
-     * 把附件内容以可读的格式拼接到用户消息前
-     *
-     * 输出形如:
-     * ---
-     * 附件文件[1]: report.md (12345 bytes)
-     * ```
-     * 这里是文件原始内容
-     * ```
-     * ---
-     * 用户问题: xxxx
-     */
     private String buildUserMessageWithAttachments(String message, List<AttachmentFile> attachments) {
         if (attachments == null || attachments.isEmpty()) {
             return message == null ? "" : message;
@@ -451,13 +612,22 @@ public class ChatServiceImpl implements ChatService {
         return content != null ? content : "";
     }
 
-    private ChatResponse.Usage buildUsage(DeepSeekResponse llmResp) {
-        if (llmResp.getUsage() == null) return null;
-        DeepSeekResponse.Usage u = llmResp.getUsage();
-        return ChatResponse.Usage.builder()
-                .promptTokens(u.getPromptTokens())
-                .completionTokens(u.getCompletionTokens())
-                .totalTokens(u.getTotalTokens())
-                .build();
+    private String truncate(String s, int max) {
+        if (s == null) return "";
+        return s.length() <= max ? s : s.substring(0, max) + "...";
+    }
+
+    /** 累计 token 用量(跨多轮工具调用) */
+    private static class UsageAcc {
+        int prompt;
+        int completion;
+        int total;
+
+        void add(DeepSeekResponse.Usage u) {
+            if (u == null) return;
+            prompt += u.getPromptTokens();
+            completion += u.getCompletionTokens();
+            total += u.getTotalTokens();
+        }
     }
 }
